@@ -1,0 +1,25 @@
+{
+  "name": "costing-system",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "db:generate": "pnpm --filter @costing/api prisma generate",
+    "db:migrate": "pnpm --filter @costing/api prisma migrate dev",
+    "db:seed": "pnpm --filter @costing/api prisma db seed",
+    "db:seed:demo": "pnpm --filter @costing/api seed:demo"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@prisma/client": "^6.19.3",
+    "prisma": "^6.19.3",
+    "turbo": "^2.11.10",
+    "typescript": "~5.9.3"
+  }
+}

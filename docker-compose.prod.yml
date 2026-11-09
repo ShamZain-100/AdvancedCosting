@@ -1,0 +1,85 @@
+# Production stack: PostgreSQL, one-off migration, API, web and a Caddy proxy that gets HTTPS certificates automatically.
+#   cp .env.production.example .env.production   (fill it in)
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+name: costing
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: costing
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: costing
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U costing -d costing"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  migrate:
+    build: { context: ., target: api }
+    restart: "no"
+    command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: postgresql://costing:${POSTGRES_PASSWORD}@db:5432/costing?schema=public
+    depends_on:
+      db: { condition: service_healthy }
+    logging: *logging
+
+  api:
+    build: { context: ., target: api }
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://costing:${POSTGRES_PASSWORD}@db:5432/costing?schema=public
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ random characters)}
+      FILE_URL_SECRET: ${FILE_URL_SECRET:-}
+      WEB_ORIGIN: ${WEB_ORIGIN:-https://${DOMAIN:?set DOMAIN}}
+      TRUST_PROXY: "true"
+      UPLOAD_DIR: /data/uploads
+      API_PORT: "4000"
+      ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
+      # browser / phone push (optional; without them notifications show in the app only)
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    volumes: [uploads:/data/uploads]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    logging: *logging
+
+  web:
+    build:
+      context: .
+      target: web
+      args: { NEXT_PUBLIC_API_URL: /api }
+    restart: unless-stopped
+    depends_on: [api]
+    logging: *logging
+
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [api, web]
+    logging: *logging
+
+volumes:
+  pgdata:
+  uploads:
+  caddy_data:
+  caddy_config:

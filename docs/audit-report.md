@@ -1,0 +1,1068 @@
+# Complete audit report
+
+Date: 7 November 2026. Read-only: the audit itself changed no application code.
+
+## Verdict
+The core is sound where it was tested, but **the system is not ready for real use**. Three critical defects affect normal work, one of them a regression from the recent UI work. All 564 automated tests pass and all 64 pages load, yet none of those checks caught them: the tests mock the database, the web app has no tests, and the page sweep only loads pages without using their controls.
+
+## How far this audit got
+- **Done:** engine 152 and API 412 tests pass; typechecks clean; dependency scan; 64-page live sweep with no failed API call; 14 specialist code reviews, producing 325 raw findings (many are duplicates of each other).
+- **Stopped early by the usage limit:** independent verification. Only 16 findings got a skeptic's verdict (all confirmed). The completeness critic, its follow-up audits and the final merge never ran.
+- **Checked by hand instead:** the findings below, each marked with how it was checked.
+- **So:** sections 1 to 3 are verified. The appendix is **unverified**: at least one entry checked by hand was false, so treat the appendix as leads to check, not facts.
+- Not covered: load testing, HTTPS on a real domain, backup and restore actually run, import with a filled workbook.
+
+## Fix status (critical and high)
+
+All 18 verified critical and high defects below are fixed in the code, with tests where the code can be tested automatically. Medium and low raw findings in the appendix are still unverified and not addressed.
+
+| # | What changed | Limit worth knowing |
+|---|---|---|
+| C1 | Dropdown picks pass the picked record, so choosing an item or labour fills its unit and details again. | |
+| C2 | Costings waiting for approval or approved, quotations past draft and active or archived price lists show their saved figures and no longer recalculate. | |
+| C3 | Quotations and price lists include the extra % and after-GST expenses, through one engine function (`costForPricing`). | Existing lists keep their old prices until repriced. |
+| H1 | The customer group field moved from the supplier form to the customer form. | |
+| H2 | Extra % and company expenses appear on the print view, PDF and Excel. | |
+| H3 | Nobody can grant access they lack, change their own access, or change an account that holds more access than they do. | |
+| H4 | With a temporary password, the API refuses everything except what is needed to change it, and the new password must differ. | |
+| H5 | `.smoke-credentials`, `build.log` and every `.env` are excluded from images. | Older images still contain the file until removed. |
+| H6 | Emptying an optional field on a master form now clears it. | Applies to master forms only. |
+| H7 | Deleting an item's last purchase restores the rate from before its purchases; a manual rate set after them stays. | A supplier's own rate has no history, so it keeps its last value. |
+| H8 | Lockout counts per address (5), with an account-wide limit (30), and an admin can clear it from the user page. | |
+| H9 | Staff can edit and submit costings; Accountant can record purchases. | Existing databases need the seed step. |
+| H10 | The palette uses the exact hex values, by redefining the Tailwind shades the app uses. | |
+| H11 | Decimal places are capped at 2 to match the money columns. | The columns were not widened. |
+| H12 | Price lists hold the price of one unit. Rows priced the old way, for a quantity other than 1, show as out of date and cannot be quoted until repriced. | |
+| H13 | A line from a "no GST" price list is never charged GST, even if a GST % is sent. | |
+| H14 | Active fixed-factor Area / Conversion rules now work in costings, templates, purchases and unit dropdowns. | Custom formulas are stored but not run. Rules are not chained through a third unit. |
+| H15 | Deployment docs corrected: database password command, backup folder, seed step when updating. | |
+
+## 1. Critical (verified)
+| # | Problem | Where | Checked by |
+|---|---|---|---|
+| C1 | **Picking an item, labour or customer in a dropdown is broken.** `Select` passes the dropdown option to `onPick` where the editors expect the record. Picking an item throws an error, its unit is not set, and the list stays open; a picked labour does not set its unit; a picked customer does not fill the customer details correctly. Regression from UI v2. | `components/template-editor.tsx:61`, `components/master-form.tsx` | Reproduced live: `Cannot read properties of undefined (reading 'id')` |
+| C2 | **An approved costing's screen shows today's figures, not the approved ones.** The stored figures are safe, but the summary is recalculated from current rates for every status. | `components/costing-editor.tsx:328` | Reproduced live: "approved v3" costing shows 2,738.78; stored and printed 2,219.58 |
+| C3 | **Quotations and price lists ignore the extra % and after-GST expenses.** Material 1000, GST 18%, markup 20%: with 10% extra the costing sells at 1,557.60 and the quote stays 1,416. With a 500 after-GST expense total cost is 1,680 and the quote is still 1,416, below cost, with no warning. | `quotations.service.ts:83-88`, `price-lists.service.ts:49`, `pricing.ts:17` | 3 independent skeptics plus code read |
+
+## 2. High (verified)
+| # | Problem | Where | Checked by |
+|---|---|---|---|
+| H1 | The customer group field is on the **Supplier** form and missing from the **Customer** form, so customers cannot be put in a group from the screen. My edit hit the wrong entry. | `lib/masters.tsx:69,160` | Code read |
+| H2 | Costing print, PDF and Excel leave out the extra %, so the printed figures do not add up to the selling price. | `print.service.ts:143`, `export.service.ts` | Code search: no reference to extra |
+| H3 | **Privilege escalation.** Anyone with `users:manage_settings` can give themselves any role or permission; `roles:edit` can change any role; `users:edit` can change a super admin's login email. | `users.service.ts:64-72,97` | Code read |
+| H4 | "Must change password" is not enforced. The API ignores it and the browser only redirects once at sign-in, so a temporary password stays usable. Earlier I described this as forced, which overstated it. | `auth/guards.ts`, `app/login/page.tsx:21` | Code search |
+| H5 | **The smoke admin's password file is inside the API image.** `.smoke-credentials` is not in `.dockerignore`, and the API image is the whole build stage. | `.dockerignore`, `Dockerfile` | Code read |
+| H6 | Clearing an optional field on any master is silently not saved: blank becomes "not provided", so the old value stays. | `validators/common.ts:8`, `master.service.ts:89` | Code read |
+| H7 | Deleting an item's last purchase leaves the deleted purchase's rate as the current rate. | `purchase-rates.service.ts:97` | Code read |
+| H8 | Anyone can keep any account locked, including the admin, with 5 wrong passwords per 15 minutes, and there is no unlock. | `auth.service.ts:37` | Code read |
+| H9 | Starter roles do not work: **Staff** can create a costing but never edit or submit it (needs `costing:edit`), and **Accountant** cannot record a purchase (needs `purchase_rates:create`). | `seed/seed.ts`, controllers | Code read |
+| H10 | **The palette is not exact, and I told you it was.** Measured: success `#00A63E` (yours `#16A34A`), warning `#FE9A00` (`#F59E0B`), danger `#E7000B` (`#DC2626`), info `#0092B8` (`#0891B2`), secondary text `#62748E` (`#64748B`). Primary, sidebar and background are right, apart from a one-digit difference in text. | `globals.css`, `docs/architecture.md:205` | Measured from Tailwind's values |
+| H11 | The decimals setting allows up to 6, but money columns store 2, so saved figures differ from calculated ones. | `validators/costings.ts:96`, `schema.prisma` | Code read |
+| H12 | Price list figures use the whole costing quantity, while quotations divide by quantity. For quantity above 1 they disagree. | `price-lists.service.ts:49` | Code read |
+| H13 | A quotation line from a "no GST" price list is still charged GST. | `quotations.service.ts:102` | Code read |
+| H14 | The Area / Conversion master is stored but no calculation uses it. | `masters.config.ts` | Code search |
+| H15 | Deployment docs: the suggested `POSTGRES_PASSWORD` command can produce `/` or `+`, which breaks the database URL; the backup cron line fails on a fresh install because `backups/` does not exist yet, so no backups run; the update steps omit the seed, so new permissions return 403 even for admins. | `docs/deployment.md:20,53,63`, `docker-compose.prod.yml:31` | Code read |
+
+## 3. Not built yet (known, planned)
+Per-group prices, publish tick box, cost and price list reports, fully filterable report tables, Manager / User / Designer roles, column-level permissions, customer-group scoping of data.
+
+## 4. Dependency scan
+- `multer` 2.4.0 denial of service, through file uploads: reachable by signed-in users with upload permission. Update when Nest ships a fixed version.
+- `postcss` in Next and `deepmerge-ts` in the Prisma CLI are build tools, not exposed to users at run time. `uuid` and `js-yaml` were not traced further.
+
+## 5. Checked and false
+- "`quotations:edit` alone can reopen an approved quotation": false. Revising a sent or approved quotation requires `quotations:approve` (`quotations.service.ts:248-249`).
+
+## 6. What held up
+Money maths in the engine reconciled in live tests, approved figures in the database never moved, route permissions held for the Staff user, forged prices were ignored, migrations applied on real PostgreSQL, and no page failed to load.
+
+## Appendix: all raw findings (325, unverified, with duplicates)
+Critical 8, high 66, medium 134, low 117. Severity is the reviewer's own.
+
+
+### Critical
+
+- **Extra % is left out of price lists and quotations, so they under-price the costing** `apps/api/src/price-lists/price-lists.service.ts:49`
+  - Impact: Using the documented example (docs/architecture.md:198: total 4868.82, extra 5% = 243.44, markup 10%, selling 5623.49), and assuming no after-GST expenses: a quotation line from the costing at its default markup with 18% GST comes to 5355.70, which is 267.79 below the approved selling price. A price list at 3% on 'Cost incl. GST' gives 5014.88. That is below the uplifted cost of 5112.26, yet it shows a positive profit and raises no BELOW_COST flag.
+  - Fix: Add extraAmount to the costing figures and to PriceInput, and include it in the cost base in calculatePrice for both the price list and quotation paths. Add hand-checked engine tests. Snapshot the value on price list items if needed, as basicCost already is.
+- **Quotations and price lists ignore the extra % and drop after-GST expenses, so customer prices are lower than the costing's selling price** `apps/api/src/quotations/quotations.service.ts:83`
+  - Impact: Uses the project's own figures from docs/smoke-test.md:26-27 (basic 1,710, GST 18%, markup 10%, extra 5%). The costing selling price is 2,330.56. A quotation line with blank profit % gives unit price 1,881.00 + GST 338.58 = 2,219.58, which is 110.98 short with no warning. If the 100 company expense is AFTER_GST on top of basic 1,710, the costing sells at 2,329.58 but the quotation stays at 2,219.58: the expense and its markup are lost. A price list with costBase BASIC_COST loses the same amounts. TOTAL_COST keeps the after-GST expense but never the extra. BELOW_COST and margin % are also calculated against the understated cost.
+  - Fix: Carry the uplift into pricing: select extraAmount and pass a cost base of cost + extra (and after-GST expenses) into calculatePrice, or have quotation COSTING lines default to the costing's netSellingPrice converted to ex-GST. Keep the formula in the engine, not in the service.
+- **A quotation line priced from a costing leaves out the extra % and after-GST expenses, so it can quote below cost** `apps/api/src/quotations/quotations.service.ts:83`
+  - Impact: Computed with the real engine. Material 1000, GST 18%, markup 20%. The plain costing gives selling 1416 and quote grand total 1416, which agree. With extra 10%, the costing selling price is 1557.60 but the quote is still 1416 (taxable 1200 + GST 216), so 141.60 is lost. With a 500 AFTER_GST company expense (rent), total cost is 1680 and costing selling is 2016, but the quote is 1416. That is 264 below the costing's own total cost, with no warning. Changing either setting has no effect on the quoted price.
+  - Fix: Price from the cost including the uplift. Add the costing's extraAmount and its after-GST expenses (totalCostInclGst - basicCost - gstAmount) to the per-unit cost base before applying the profit %, through one shared engine function rather than a calculation in the service.
+- **A quotation line from a costing leaves out the extra % and after-GST expenses, so it under-quotes the costing's selling price** `apps/api/src/quotations/quotations.service.ts:83`
+  - Impact: Basic 1000, GST 18%, after-GST expense 100, extra 10%, markup 20%: costing selling price = 1689.60. Worked with a node calculation using the costing.ts formulas. Adding that costing to a quotation with Profit % left blank gives 1200 ex-GST, 1416 incl. GST, which is 273.60 less. A company expense set to after-GST is lost in the same way. Price lists also ignore `extraAmount` (price-lists.service.ts:36, not selected). The plan leaves those documents unchanged, so the owner should confirm that part.
+  - Fix: Add the costing's stored `extraAmount` and after-GST expense share to the per-unit cost before applying profit. Make a blank Profit % produce the costing's own `netSellingPrice` on an ex-GST basis, using the engine and not new maths in the service.
+- **COSTING quotation lines drop the extra % and after-GST expenses, so the default quote undercuts the costing's selling price** `apps/api/src/quotations/quotations.service.ts:88`
+  - Impact: Basic 1000, GST 18%, extra 10%, markup 20%: costing selling = 1180 + 118 + 259.60 = 1557.60. A COSTING quotation line with blank profit gives 1000 x 1.2 = 1200 + 216 GST = 1416, which is 141.60 short. With a 100 after-GST expense and no extra: costing selling 1536, quotation 1416. Nothing warns the user, because the line is not stale and has no BELOW_COST flag.
+  - Fix: Add a per-unit cost figure that includes extra and after-GST expenses to the pricing input, derived from the stored costing totals. Assert in a test that a blank-profit line equals netSellingPrice when GST is the only difference.
+- **Approved and pending costing screens show a fresh calculation from today's masters, not the stored frozen figures** `apps/web/src/components/costing-editor.tsx:328`
+  - Impact: Approve a costing at 98/kg (selling 4351.05, the fixture in costings.recalculate.spec.ts). The item rate moves to 105. The approved costing still says 'Rates are frozen' but its summary shows selling 4541.32 and rate 105, while the PDF and reports show 4351.05. A newly added company expense also appears on it. For PENDING_APPROVAL, recalculation is skipped (costings.service.ts:409), so the approver sees the new figures and Approve freezes the older stored ones.
+  - Fix: When status is APPROVED or PENDING_APPROVAL, disable the preview query and render the stored totals, rows and companyExpenses from GET /costings/:id. Make POST /costings/preview?costingId= return the stored figures for a non-editable costing.
+- **An approved costing's screen shows figures recalculated from today's master rates, not its frozen figures** `apps/web/src/components/costing-editor.tsx:328`
+  - Impact: Approve a costing with Metal Pipe at 98, then record a purchase at 105. Opening the approved costing shows the green banner "Rates are frozen" while every row and the Selling price use 105. The DB and the PDF still hold 98, so screen and print disagree. If a referenced master is later deleted, preview returns 400 and the panel shows no totals.
+  - Fix: When status is not DRAFT or REJECTED, disable the preview query and render rows and summary from the stored GET /costings/:id `totals` and `rows`. Add the stored breakdown figures to that response.
+- **calculatePrice has no input for the extra amount, and its basic-cost base drops after-GST expenses, so price lists understate cost and BELOW_COST does not fire** `packages/costing-engine/src/pricing.ts:17`
+  - Impact: Computed. A costing with material 1000, GST 18%, extra 10% has total 1180, extra 118, real cost 1298 and costing selling 1557.60. A price list at 0% profit on TOTAL_COST, INCLUSIVE gives 1180, which is 118 below real cost, with effectiveProfit 0 and no flag. At 20% it gives 1416, reporting profit 236 when the true margin over 1298 is 118. A costing with a 500 AFTER_GST expense has total 1680. Price list BASIC_COST, INCLUSIVE, 20%, less 10% discount gives effective 1274.40, effectiveProfit +94.40 and no BELOW_COST flag, although the price is 405.60 below total cost.
+  - Fix: Add the extra amount (and after-GST expenses for the basic base) to PriceInput, include them in baseInBasis and costInBasis, select them in approvedCostings, and snapshot them on PriceListItem.
+
+### High
+
+- **Smoke super-admin credentials file is copied into the API image and made readable by the app user** `.dockerignore:1`
+  - Impact: Anyone who can pull or save the image, run `docker exec`, or read files through a compromised API process gets `email=smoke@example.com` and its generated password (deploy/smoke-admin.sh:10). seed.ts:88 creates that user with isSuperAdmin: true. The password stays in image layers even after the host file is deleted. It is only usable if the password was not changed at first login; the DB was not checked. build.log also goes into the image.
+  - Fix: Add `.smoke-credentials`, `*.log` and `build.log` to .dockerignore, rebuild, remove old images and build cache, and deactivate the smoke user.
+- **Anyone can keep any account locked out, including the super admin, and nothing clears the lock** `apps/api/src/auth/auth.service.ts:37`
+  - Impact: An unauthenticated attacker who knows admin@company.com sends 5 wrong passwords from one IP, then about one more each time a failure ages out. The real admin gets HTTP 429 with the correct password indefinitely. A forgot-password reset does not help, because the new password is refused too. Repeating this across a list of staff emails stops the whole company signing in. Trying 6 passwords on any address also tells an attacker whether that account exists (429 versus 401).
+  - Fix: Count failures per (account, client IP) in the lockout query, or add a progressive delay instead of a hard block. Treat a successful password reset or admin reset as the new lockout baseline (`lastGood` should include `password_reset` and `admin_reset_password`). Add an admin unlock action.
+- **mustChangePassword is not enforced by the API or the UI, so temporary passwords stay usable** `apps/api/src/auth/auth.service.ts:52`
+  - Impact: An admin creates a user with temporary password `Welcome123`, or resets a password. The user signs in, clicks any sidebar link or reloads, and works indefinitely on the password the admin knows. A direct API client is never stopped either. The seeded super admin can keep the 'a-long-temporary-password' passed on the command line. This also breaks the binding rule that controls are enforced on the backend.
+  - Fix: Load mustChangePassword in authenticate(). In JwtAuthGuard, return 403 with a distinct code while it is true for every route except POST /auth/change-password, POST /auth/logout and GET /auth/me. Have (app)/layout.tsx redirect to /profile on that state.
+- **The core permission path has no tests: authenticate, role grants and per-user overrides** `apps/api/src/auth/auth.service.ts:132`
+  - Impact: These regressions would all leave the suite green: authenticate mapping DENY rows wrongly, ignoring session.revokedAt, skipping the isActive check, removing the super admin guard in setStatus, or role.permissions being read from the wrong relation. Permission enforcement is a binding project rule.
+  - Fix: Add auth.service tests for authenticate (revoked session, expired session, inactive user, ALLOW and DENY rows, super admin) and for changePassword and resetPassword revoking sessions. Add specs for RolesService and for UsersService setStatus, resetPassword, setRoles and setOverrides. Correct acceptance row 2's evidence.
+- **mustChangePassword is not enforced by the API, and the browser only redirects once** `apps/api/src/auth/guards.ts:15`
+  - Impact: A seeded super admin (seed.ts:88), a new user (users.service.ts:54) or a user after an admin reset (:90) keeps a password the admin chose and has full API access. They can also click any sidebar link straight after login. Submitting the same password as the new password clears the flag, so the temporary password stays valid indefinitely.
+  - Fix: Put mustChangePassword on AuthUser and, in JwtAuthGuard, return 403 for it except on auth/change-password, auth/me and auth/logout. Reject newPassword that matches the current hash. Add a redirect in the (app) layout.
+- **The Area / Conversion Master has no effect: no calculation reads it and custom formulas are never evaluated** `apps/api/src/costings/costings.service.ts:137`
+  - Impact: An admin creates "1 Meter = 3.15 KG" for Metal Pipe MAX in the Conversion Master. On a costing row Meter is not offered (costing-editor.tsx:90), and the API rejects it with "Unit M cannot be used for Metal Pipe MAX". Only the separate conversion table inside the item form works. A reusable rule such as 1 box = 12 pieces (generic rules must stay within one unit type) does nothing either.
+  - Fix: Merge active AreaConversion rows (item-specific first, then generic) into the conversions passed to `convertQuantity`, in costings, purchase rates and templates, and in the unit lists offered in the UI. Implement a safe formula evaluator or remove the CUSTOM_FORMULA option.
+- **Labour line unit is selectable but never converted, so the master rate is applied per whatever unit is chosen** `apps/api/src/costings/costings.service.ts:163`
+  - Impact: Labour master is 1200 per Day. A user picks Hour (or KG) and enters qty 8. The total is 9600 instead of 1200 for 8 hours, and the cost is overstated eightfold. The stored line and printout show '8 Hour x 1200'.
+  - Fix: Convert with convertQuantity between the line unit and the master's unit as materials do, rejecting incompatible units. Or remove the unit choice and force the master's unit.
+- **No optimistic locking on costing, quotation, template and price list edits** `apps/api/src/costings/costings.service.ts:374`
+  - Impact: Users A and B open draft costing v3. A saves, making v4. Later B saves from the form still showing v3, and A's materials and prices are silently replaced by v5 with no warning. Quotations have no revision table, so the overwritten draft is gone entirely.
+  - Fix: Have the client send the loaded version. In the transaction run updateMany({ where: { id, version: expected, status: { in: editable } } }) and return 409 when count is 0. Map P2002 and P2034 to 409.
+- **Excel import has no limit on decompressed size, so a 5 MB zip bomb can run the API out of memory** `apps/api/src/data/excel-io.ts:37`
+  - Impact: A signed-in user with purchase_rates:import, which the seeded Accountant role has (seed.ts), posts a crafted .xlsx with several highly compressible xl/media/* entries to POST /api/purchase-rates/excel/preview. Node buffers are off-heap, so resident memory grows until the kernel OOM killer fires. That kills the API for everyone and may hit PostgreSQL on the same host. The API restarts, so the attack can repeat. That route has only the default 120 per minute throttle.
+  - Fix: Before calling load, open the zip with JSZip (or read the central directory) and reject the file if entry count, per-entry size or total uncompressed size exceeds a small cap, such as 50 MB in total. JSZip's declared sizes can be forged, so also cap the bytes during inflate. Share one guarded loader between readRows and RatesExcelService.preview.
+- **Saved documents show blank dropdowns once a referenced master is deactivated, including frozen approved costings** `apps/api/src/masters/master.service.ts:37`
+  - Impact: Deactivate an item, unit, group, type or customer that an approved costing uses. Opening that costing now shows 'Select…' for Item, Unit and so on, and the unit list and Min/Max/Supplier rate options collapse, although the row still has a total. Live costings look unfilled and the user cannot tell what the row holds.
+  - Fix: Keep selected inactive records resolvable: have the document API return labels for its references, or fetch `status=all` by id and merge the current value into the options as '(inactive)'.
+- **Dropdown lists silently stop at 1,000 records and carry the full item graph** `apps/api/src/masters/master.service.ts:38`
+  - Impact: With 1,200 customers sorted by name, the customers after number 1,000 cannot be picked for a quotation, and nothing tells the user. The same applies to items in the purchase-entry, manual-rate and report-filter dropdowns. Each dropdown fetch also costs about 10 relation queries plus auth, and opening the list draws 1,000 DOM rows.
+  - Fix: Add a light option endpoint (`select: id, name, code`) with server-side search driven by the Combobox query. At minimum return `truncated: true` and show it. Keep the full include only where the row data is used (the costing and template material rows).
+- **Blank optional fields can never be cleared on any master** `apps/api/src/masters/master.service.ts:86`
+  - Impact: The form says saved but the old value stays. A customer cannot be removed from a customer group, which also keeps the group undeletable. Item.defaultSupplierId, Labour.unitId and typeId, Unit.baseFactor, AreaConversion.itemId, min/max/avg on capable items, and supplier GSTIN, address and mobile cannot be blanked.
+  - Fix: In MasterService.update, convert schema keys that came back undefined to null before writing, except defaulted required fields.
+- **Saving the item form overwrites purchase-driven rates with stale form values** `apps/api/src/masters/master.service.ts:89`
+  - Impact: A user opens Item Master with the rate at 98. A colleague records a purchase, so recalcItem moves the rate to 105 and updates the supplier rate. The user clicks Edit and changes only the description. The PUT puts the rate back to 98, restores old min/max/avg and supplier rates, and drops supplier links created by purchases. watch() then logs 'Rate edited in the item master' against that user and queues or auto-applies 98 to live costings.
+  - Fix: Send updatedAt from the form and use updateMany with { id, updatedAt } (409 on count 0). Also ignore rate fields on PUT unless they changed against the loaded value.
+- **Clearing an optional field on a master edit is silently not saved** `apps/api/src/masters/master.service.ts:89`
+  - Impact: Edit a supplier, clear Mobile or GSTIN, and Save reports success but the old value returns after reload. The same happens for description, address, notes, labour unit/type, a conversion's item, item default supplier and a customer's group. A wrong unit `baseFactor` can never be blanked, so conversions keep using it.
+  - Fix: In MasterService.update, map undefined optional scalar fields to null before the Prisma update (for example from the schema's keys, as company.service.ts does), excluding nested keys.
+- **Company expense is meant to be admin-set, but any expenses:edit holder can change it, including the seeded Accountant** `apps/api/src/masters/masters.config.ts:100`
+  - Impact: An Accountant sends PUT /expenses/<id> to change defaultValue, sets isCompanyExpense:false, or sends PATCH /expenses/<id>/status {isActive:false}. masters.config.ts:110-113 then emits COMPANY_EXPENSE, which affects every live costing (recalc.service.ts:87) and is applied at once in AUTO mode (:122). Selling prices move on all live costings without an administrator being involved.
+  - Fix: Add a master-level guard: creating, editing, changing status of or flagging an expense where before.isCompanyExpense or after.isCompanyExpense requires settings:manage_settings or a dedicated permission. Enforce it in MasterService via a cfg hook that receives the actor.
+- **The Area / Conversion master is stored but never used by any calculation** `apps/api/src/masters/masters.config.ts:120`
+  - Impact: An admin creates '1 Sq Ft = 2 KG' for an item. A costing row or purchase in Sq Ft is still refused with 'Unit SQFT cannot be used for ...', or the rule is silently ignored. Editing a rule changes no costing.
+  - Fix: Feed active AreaConversion rows (item-specific first, then generic) into the conversion path and emit ITEM_UNITS on change, or remove the master and say so in the docs.
+- **Changing an item's base unit leaves stored rates in the old unit, so rates can jump 1000×** `apps/api/src/masters/masters.config.ts:188`
+  - Impact: An item has base KG at 98. An admin changes the base to G and leaves the rate. A costing row in KG now resolves to 98 × 1000 = 98,000/KG, and the ITEM_UNITS batch can apply it. If the admin does convert the rate, old per-KG entries still mix with new per-G entries in min, max and weighted average.
+  - Fix: Refuse a base unit change while non-deleted purchases, template lines or costing lines reference the item, or re-normalise rates and entries in the same transaction.
+- **Changing an item's base unit reinterprets the old rate and old purchase base rates in the new unit** `apps/api/src/masters/masters.config.ts:188`
+  - Impact: Pipe has base KG at 98/KG and conversion Meter = 3.15 KG. An admin changes the base to Meter with KG = 0.3175 Meter. 98 now means 98 per Meter. A KG row resolves to 98 x 0.3175 = 31.1 per KG instead of 98, and AUTO applies this to up to 200 live costings. The next purchase computes weighted average, min and max across entries still in per-KG figures together with new per-Meter figures, so the stats are wrong too.
+  - Fix: Refuse a base-unit change while purchases, supplier rates or costing/template lines exist, or convert every stored rate and baseRate in the same transaction.
+- **Price lists ignore the costing's extra amount, so cost base, profit, margin and the BELOW_COST flag are wrong** `apps/api/src/price-lists/price-lists.service.ts:36`
+  - Impact: A costing with total 1180 and extra 118 has a real cost of 1298. A TOTAL_COST price list treats cost as 1180, so a list price between 1180 and 1298 shows positive profit and no BELOW_COST flag although it sells below cost. Margin % on screen, Excel and PDF is overstated.
+  - Fix: Select extraAmount and add it to the cost figures handed to calculatePrice, or to the cost basis in the engine.
+- **Price lists price the whole costing quantity and show it as the product's price** `apps/api/src/price-lists/price-lists.service.ts:49`
+  - Impact: Computed. A costing with quantity 10, material quantity 10 at 1000, GST 18%, markup 20% gives netBasicRate 1000 and netSellingPrice 1416 per unit. A price list at 20% prints 'List price 12000, Price incl. GST 14160' on the product's row, ten times the unit price. Fixed profit, min price, max price and round-to also apply to the batch: fixed profit 100 is 10 per unit, and a max price of 2000 entered per unit caps the batch at 2000, flagging MAX_APPLIED and BELOW_COST with effectiveProfit -8000.
+  - Fix: Pass per-unit cost (total / costing quantity) into calculatePrice so every list figure is per unit, and remove the division at quotations.service.ts:102.
+- **Editing a draft price list deletes and recreates its items, leaving quotation lines with a dangling priceListItemId** `apps/api/src/price-lists/price-lists.service.ts:137`
+  - Impact: Active list used by quotation Q, then revert to draft, change one profit, save and reactivate. Every draft quotation on that list now fails with 'items.N.priceListItemId: Price list item not found' on Reprice and on every Save, including unrelated edits such as the customer name. The user must remove and re-add each line. The existing line shows no stale marker.
+  - Fix: Update items in place, keyed by costingId, so ids survive. Add a real FK from QuotationItem.priceListItemId with ON DELETE SET NULL and handle the null case.
+- **Costing print preview and PDF leave out Extra %, so the printed figures do not add up** `apps/api/src/print/print.service.ts:74`
+  - Impact: The documented example has GST 18%, markup 10%, extra 5%: total 4868.82, extra 243.44, markup 511.23, selling 5623.49. The printed sheet and PDF show 4868.82 + 511.23 next to Selling price 5623.49, which is 243.44 short with no explanation. This affects the detailed, summary and product layouts of every costing with extra above 0, including approved ones.
+  - Fix: Add `extraPercent` and `extraAmount` to the print model summary. Print a 'Extra n%' row between total cost and markup in both `summaryBlock` and the PDF `p.totals` (when above 0, as the editor does).
+- **Printed and PDF costing sheets, and the profit report, omit the extra amount, so totals do not add up** `apps/api/src/print/print.service.ts:143`
+  - Impact: Using docs/smoke-test.md:27, the sheet prints Total 2,017.80 + Markup 211.87 = Selling 2,330.56, but those two lines sum to 2,229.67; 100.89 is invisible. With a 50 after-GST expense, material + labour + other expenses no longer equals the printed basic cost, and basic + GST no longer equals the printed total. The owner asked for an extra % in the costing, and it is missing from every printed form.
+  - Fix: Add extraPercent, extraAmount and separate before/after-GST expense figures to the print model, the PDF, the web print page and COSTING_FIELDS/report columns.
+- **Costing print, PDF and Excel omit the extra % and company expense, so the printed sheet does not add up** `apps/api/src/print/print.service.ts:143`
+  - Impact: Total 1180, extra 118, markup 259.60, selling 1557.60. The PDF, the print preview and the Excel Summary show 1180 + 259.60 = 1557.60 with no line for the missing 118. The Profit report (report-defs.ts:252) has the same gap between cost, profit and selling. The owner-requested company expense figure appears on none of these outputs.
+  - Fix: Add extraPercent, extraAmount and companyExpenseCost to the model, the PDF totals, the Excel Summary and the print page. Show the extra line when it is non-zero.
+- **Printed, PDF and Excel costings omit the extra amount, so the figures do not add up** `apps/api/src/print/print.service.ts:144`
+  - Impact: With the documented example, the sheet prints Total 4868.82 + Markup 511.23 = 5380.05 but Selling price 5623.49, an unexplained gap of 243.44. The 'professional costing print' criterion (#18) fails for any costing with extra above 0. The Profit report has the same gap: its columns (apps/api/src/reports/report-defs.ts:252-253, fields at line 66) have no extra, so cost + profit does not equal selling.
+  - Fix: Add extraAmount and companyExpenseCost to CostingPrintModel, the PDF totals, the web print summary, the Excel summary and COSTING_FIELDS/the Profit report columns. Mark company rows in the expense tables using isCompany.
+- **Extra % is missing from the costing PDF and Excel, so printed figures do not add up, and no test or doc catches it** `apps/api/src/print/print.service.ts:146`
+  - Impact: Take the documented example (reference sheet, GST 18 %, markup 10 %, extra 5 %). The PDF and workbook show total 4,868.82 + markup 511.23 and selling 5,623.49, but those lines add to 5,380.05. The 243.44 gap has no line on the document. A price list or quotation built from that costing also silently excludes the extra, with no test or doc saying whether that is intended.
+  - Fix: Add 'Extra x %' and 'of which company expense' lines to the print model and summary, the web print page and the export Summary sheet. Extend the print and export fixtures with extraAmount > 0 and assert the lines reconcile. Pin the price list and quotation behaviour with a test or a doc note.
+- **Purchase rate recomputation has no lock, so concurrent entries or an import can leave wrong rates** `apps/api/src/purchase-rates/purchase-rates.service.ts:78`
+  - Impact: Two purchases of one item: each transaction cannot see the other's uncommitted row. The second update blocks, then overwrites with stats that exclude the first entry. Worse, during an Excel import a single manual entry computes stats without the import's rows, waits on the item row lock, then overwrites the import's result after it commits. Item rate, min, max and weighted average stay wrong until the next purchase, and live costings are recalculated from them.
+  - Fix: At the start of recalcItem, take `SELECT id FROM "Item" WHERE id = $1 FOR UPDATE` before reading entries, locking multi-item imports in sorted id order. Alternatively use Serializable with a retry.
+- **Deleting an item's last purchase leaves the deleted purchase's rate as the current rate** `apps/api/src/purchase-rates/purchase-rates.service.ts:97`
+  - Impact: An item has master rate 98 and no purchases. A user records 9800 by mistake, so the item rate becomes 9800 and live costings follow. The user deletes the entry; the response has moved=false and the rate stays 9800. Costings keep pricing at 9800 until someone notices and does a manual rate change.
+  - Fix: When the last live entry is removed, restore the oldRate of the first history row from a purchase source (and the matching supplier rate), or return an explicit warning that requires a manual rate.
+- **Deleting the only purchase entry leaves the item's rate at the deleted value** `apps/api/src/purchase-rates/purchase-rates.service.ts:97`
+  - Impact: Item standard rate is 100. A user records a purchase at 1000 (typo), so the rate becomes 1000 and live costings follow. The user deletes the entry. The response says moved:false and the rate stays 1000 with no entries behind it. STANDARD rows keep using 1000. Min/max/avg go null, so MIN/MAX/AVERAGE rows also fall back to 1000 (see the rate-basis finding).
+  - Fix: When the last entry is removed, restore the rate from before the purchase (the oldRate of the latest PurchaseRateHistory row whose source was not PURCHASE), or block the deletion until a replacement rate is given. Log a history row either way.
+- **Deleting a supplier's last purchase leaves the supplier rate at the deleted value** `apps/api/src/purchase-rates/purchase-rates.service.ts:121`
+  - Impact: Supplier S has one entry at 150 instead of 15. ItemSupplier.rate becomes 150. Deleting the entry keeps 150 with no purchase behind it, and supplierRates() still shows currentRate 150. Every SUPPLIER-basis costing row and new costing using S stays at 150, and no recalculation batch is created.
+  - Fix: When no live entry remains, delete the ItemSupplier row or restore its earlier master-entered value, and return true so the change is announced.
+- **Extra % and after-GST company expenses never reach quotations or price lists** `apps/api/src/quotations/quotations.service.ts:83`
+  - Impact: Using the hand-checked example in docs/architecture.md:198 (basic 4126.12, GST 18%, markup 10%, extra 5%), the costing selling price is 5623.49. A quotation line gives 4538.73 + GST 816.97 = 5355.70, which is 267.79 lower. An after-GST company expense is also lost from COSTING-source quotation lines and from a price list on BASIC_COST.
+  - Fix: Add extra and after-GST amounts to the cost basis used by quotation and price list lines through the engine (applyMargin or a shared helper), not by duplicating the maths in the services.
+- **Item-wise GST is not carried into price lists or quotations, so the wrong tax is charged** `apps/api/src/quotations/quotations.service.ts:85`
+  - Impact: Settings set to "Item GST % on materials", costing header GST 18%, all materials at 12%. Costing GST on basic 1000 = 120. A price list at 20% profit, EXCLUSIVE, shows incl. GST 1416 (216 GST on 1200); the correct figure at 12% is 1344. A TOTAL_COST base divides 1120 by 1.18, which understates the cost.
+  - Fix: Have the engine return an effective GST % or a by-rate split, store it on the costing, and use it in `calculatePrice` and quotation lines.
+- **Per-unit price on quotation COSTING lines is rounded to the money decimals before multiplying by quantity** `apps/api/src/quotations/quotations.service.ts:92`
+  - Impact: A costing for 10,000 screws with basic 125 and markup 0 gives unit price 0.01, so a quotation for 10,000 is 100.00 instead of 125.00 (20% under). With markup 20%, 0.015 rounds to 0.02, giving 200.00 instead of 150.00 (33% over). A costing for 1,000 pieces with basic 1,234 quotes 1,230. With decimals=0 the unit price rounds to a whole rupee. The error grows with quantity and nothing warns the user.
+  - Fix: Do not round the unit price to the money decimals for COSTING lines: calculate it at unit-price scale (for example, call the engine with decimals 4 matching the column) and let the line gross be the rounded money figure.
+- **A quotation line from a NONE (no GST) price list still charges the costing's GST** `apps/api/src/quotations/quotations.service.ts:102`
+  - Impact: Computed. Costing basic 1000, GST 18%. A price list with treatment NONE at 20% has effectivePrice 1200, gstAmount 0 and effectiveInclGst 1200, printed as 'prices have no GST'. Adding that item to a quotation gives a grand total of 1416, so the customer is billed 216 more than the list price.
+  - Fix: In the PRICE_LIST branch use `it.gstPercent ?? (p.priceList.gstTreatment === 'NONE' ? '0' : p.gstPercent.toString())`.
+- **PRICE_LIST quotation lines charge GST on a list whose treatment is NONE** `apps/api/src/quotations/quotations.service.ts:102`
+  - Impact: A NONE list with effective price 1000 and costing GST 18 shows 'no GST' and effectiveInclGst 1000. A quotation line from it is taxable 1000 + GST 180 = 1180, so the customer is quoted 180 more than the list.
+  - Fix: In the PRICE_LIST branch, default gstPercent to 0 when p.priceList.gstTreatment === 'NONE'.
+- **Revising a sent or approved quotation permanently destroys the price snapshot the customer saw** `apps/api/src/quotations/quotations.service.ts:192`
+  - Impact: Send QTN-2026-0001 at 1416, revise it with a reason, change the price and save. The original lines and total no longer exist anywhere in the database, and the number now shows the new price. Only the snapshot held while the quotation stays locked survives.
+  - Fix: Add a `QuotationRevision` table (as for costings) and write the full header and lines in the same transaction as `revise`. Show the history on the quotation screen.
+- **quotations:edit alone can reopen and overwrite an approved or sent quotation** `apps/api/src/quotations/quotations.service.ts:248`
+  - Impact: The seeded Accountant has quotations edit but not approve (seed.ts:16). On an APPROVED quotation they call POST /send, then POST /decline {reason}, then POST /revise, which leaves it in DRAFT. PUT /quotations/:id then replaces the approved prices. This bypasses the approver gate that line 249 enforces and breaks the rule that approved or sent quotations keep their price snapshot (master prompt line 907).
+  - Fix: Require quotations:approve on decline, or on revise of any quotation with a non-null sentAt or approvedAt. A simpler alternative is to store a 'wasIssued' marker and treat revise as locked when it is set.
+- **A recalculation batch stays in APPLYING forever after a restart or error, with no way out in the application** `apps/api/src/recalc/recalc.service.ts:231`
+  - Impact: Restart the API during an apply (a deploy, or the out-of-memory case above), or let line 248 throw. Costings already rewritten stay rewritten, with no RecalculationItem rows and no batch audit entry. Remaining costings stay on old figures. The batch shows APPLYING permanently, and both Apply (409) and Dismiss (400) refuse it. Recovery needs manual SQL, or a later change to the same source, which creates a new batch.
+  - Fix: Wrap the loop in try/finally that sets PARTIAL on failure. Write RecalculationItem rows per costing instead of at the end. On module init, or with an age check, reset APPLYING batches older than a threshold back to PARTIAL.
+- **Recalculation runs about 30 to 50+ sequential queries per costing inside the HTTP request, including the master-save request in AUTO mode** `apps/api/src/recalc/recalc.service.ts:237`
+  - Impact: AUTO mode, 200 live costings, admin edits a company expense: the PUT /expenses/:id spinner stays until at least 200 x 46 = 9,200 sequential queries finish. Importing rates for 100 items that each affect 100 costings causes 100 batches. The first batch applies all the new rates, then the rest re-prepare the same costings only to get UNCHANGED, about 300,000 queries in one request. A CONFIRM apply for a company expense with 5,000 live costings has no upper bound.
+  - Fix: Enqueue the batch and return immediately, with a worker that processes costings in small chunks and writes RecalculationItem rows as it goes. For imports, merge changes into one batch per import, or de-duplicate costing ids across the changed items.
+- **Reports group rows with a quadratic array spread, and 5 of the 12 load the whole table before the 100,000 row guard** `apps/api/src/reports/report-defs.ts:108`
+  - Impact: With 50,000 purchase entries for one item, or 50,000 costings of one type, simply opening the Item-wise Purchase Rate or Type-wise report freezes the single Node process for about 30 s. Every user's API call hangs during that time. This is separate from the accepted in-application aggregation: the cost is the O(n²) copy and the missing query limit.
+  - Fix: Replace the spread with `const l = by.get(k); if (l) l.push(r); else by.set(k, [r]);` in all four places. Add `take: MAX_SOURCE_ROWS + 1` at lines 81, 106, 256, 277 and 304. Do not auto-run a report until filters are applied. The same spread is in apps/api/src/data/import.service.ts:175 and :259, where the 5,000 row import cap limits the damage.
+- **Costing History report loads the full JSON snapshot of up to 100,001 revisions, with no index on its filter or sort column** `apps/api/src/reports/report-defs.ts:348`
+  - Impact: Revisions accumulate on every save and on every changed costing in a recalculation. By my estimate of about 10 KB per snapshot (not measured), 40,000 revisions is about 400 MB of JSON before JS object overhead. Opening the report runs it unfiltered, so a user with reports:view can push the API towards heap exhaustion, which kills any recalculation in flight (see the APPLYING finding).
+  - Fix: Select only the needed paths, either with $queryRaw using `snapshot->>'status'` and `snapshot#>>'{totals,sellingPrice}'`, or by adding status, basicCost and sellingPrice columns to CostingRevision. Filter status in SQL. Add @@index([createdAt]) on CostingRevision.
+- **TRACKED GAP (not built): cost report and price list report** `apps/api/src/reports/report-defs.ts:360`
+  - Impact: Neither report exists, and that on-screen hint is currently untrue.
+  - Fix: Build part 3 of the plan.
+- **TRACKED GAP (not built): fully filterable report tables (server-side column filters, DataTable)** `apps/api/src/reports/reports.service.ts:41`
+  - Impact: Users cannot filter or sort by column in any report.
+  - Fix: Build part 3 of the plan.
+- **TRACKED GAP (not built): column-level permissions** `apps/api/src/reports/reports.service.ts:49`
+  - Impact: Anyone with report or costing view access sees every cost, markup and selling column.
+  - Fix: Build part 4 of the plan.
+- **TRACKED GAP (not built): Manager, User and Designer roles** `apps/api/src/seed/seed.ts:9`
+  - Impact: The requested roles do not exist, and a photo-only Designer is not possible because uploading requires costing edit rights.
+  - Fix: Build part 4 of the plan.
+- **users:edit can change a super admin's login email** `apps/api/src/users/users.service.ts:69`
+  - Impact: A non-super user with users:edit sends PATCH /users/<super admin id> {email:'x@y.z'}. The super admin can no longer sign in with their address, and the failed attempts and any reset request now go nowhere. Existing sessions stay alive. Once e-mail delivery exists, the attacker's address receives the reset link, which is a full takeover. The same call works on any other user, with no session revocation.
+  - Fix: In update, add: if (target.isSuperAdmin && !actor.isSuperAdmin) throw Forbidden. Revoke the target's sessions and outstanding reset tokens when the email changes.
+- **Anyone with users:create, users:manage_settings or roles:edit can grant themselves any permission** `apps/api/src/users/users.service.ts:97`
+  - Impact: A custom role such as a future Manager holding only users:create calls POST /users with roleIds:[Admin id], signs in as that user and has every module. A holder of users:manage_settings calls PUT /users/<own id>/permissions with {key:'users:manage_settings',effect:'ALLOW'} and any other key, or resets a non-super Admin's password and signs in as them. A holder of roles:edit calls PUT /roles/<own role>/permissions with all keys. Each of these turns a narrow user-management grant into full admin.
+  - Fix: In a shared helper, reject any role or ALLOW override containing a key the actor lacks unless actor.isSuperAdmin, and apply it in create, setRoles, setOverrides and roles.setPermissions. Refuse self-targeted setRoles/setOverrides. Refuse password reset of a target holding permissions the actor lacks.
+- **TRACKED GAP (not built): customer-group scoping of data** `apps/api/src/users/users.service.ts:115`
+  - Impact: The 'Customer groups' card on the user page has no effect, so an assigned user still sees every group's customers and quotations.
+  - Fix: Build part 4 of the plan.
+- **Material and quotation rows use 12-column tracks, so Qty, Unit and Rate are clipped on normal screens** `apps/web/src/components/costing-editor.tsx:94`
+  - Impact: On a 1280px laptop the closed Unit dropdown shows one or two characters ('p…' for pcs), and a quantity like 12.500 is cut off in its input. A rate such as 12,500.00 (about 58px) overflows its 46px cell. At 1024px the Unit shows no text and Qty is unusable. This is the main data-entry screen, and the user cannot read the chosen unit without opening the list.
+  - Fix: Replace the 12 equal tracks with explicit rem tracks, for example `sm:grid-cols-[2rem_minmax(8rem,1fr)_5rem_5rem_7rem_6rem_7rem_3.5rem]`. Move the summary column from `lg:` to `xl:`, and apply the same to quotation-editor.tsx.
+- **Workflow buttons act on the last saved version and silently discard unsaved edits** `apps/web/src/components/costing-editor.tsx:403`
+  - Impact: A user changes a markup or quotation price and clicks 'Approve & freeze rates' or 'Mark as sent' without saving first. The old figures are frozen or marked as sent, the form snaps back and no warning appears.
+  - Fix: Disable these actions while `form.formState.isDirty`, or save first and then run the action, and tell the user.
+- **Locked quotation and price list screens re-price from their sources instead of showing stored prices** `apps/web/src/components/quotation-editor.tsx:100`
+  - Impact: A sent quotation's costing is reopened and re-approved at a new price: the quotation screen shows the new unit price and grand total while the stored row and PDF keep the old ones. While the costing is reopened, preview returns 400 and fresh loads show no totals on the locked document.
+  - Fix: When status is not DRAFT, render lines and totals from the stored `serverItems` and header figures, and disable the preview query.
+- **Select passes the whole ComboOption to onPick as if it were the record: picking an item throws, picking a customer wipes the customer fields** `apps/web/src/components/template-editor.tsx:61`
+  - Impact: Picking an item in a template or costing throws `TypeError: Cannot read properties of undefined (reading 'id')` inside `pick()`. The value is set but `close()` at combobox.tsx:92 never runs, so the dropdown stays open, the unit is not filled and rateBasis is not reset. Picking or quick-adding an existing customer on a quotation blanks name, mobile, email, address, GSTIN and state and raises 'Required' on the name. Picking labour never pre-fills the unit.
+  - Fix: In Select: `onChange={(v, opt) => { field.onChange(v); onPick?.(v, opt?.row); }}`.
+- **Customer group field is wired into the Supplier form and is missing from the Customer form** `apps/web/src/lib/masters.tsx:69`
+  - Impact: An admin picks a customer group on a supplier, Save succeeds and the value is silently discarded. No customer can be assigned to a group from the UI, so the customer-group filter at masters.tsx:163 always returns nothing, and the margin-per-group feature has no customers behind it.
+  - Fix: Move the groupId field and the Group column from `suppliers` to `customers` (after nameCode, with master: 'customerGroups'). Remove them from suppliers.
+- **The customer group field is on the Supplier form instead of the Customer form** `apps/web/src/lib/masters.tsx:69`
+  - Impact: Choosing a group on a supplier is silently dropped by Zod on save. No customer can be assigned to a group from any screen or import, while the customer filter by group always returns nothing. The planned group scoping would have no data to work with.
+  - Fix: Move the field and column from `suppliers` to `customers` in masters.tsx, and add a group code column to the customer import kind.
+- **restore.sh does not produce a clean restore: older dumps collide with the current schema and failures leave a half-restored database with the app down** `deploy/restore.sh:14`
+  - Impact: This is the documented rollback: back up, update (docs/deployment.md:56), then restore if the update goes wrong. With a dump older than the current schema, DROP of "User" fails, CREATE fails because the table exists, and COPY hits duplicate keys. pg_restore continues past these errors, so other tables are replaced while "User" keeps current rows, then it exits 1. `set -e` then stops the script before line 20, leaving api and web stopped and a mixed database. If no FK blocks the drop, _prisma_migrations goes back to the old list while the new tables remain. `up -d` then re-runs `migrate deploy`, CREATE TABLE fails, and api never starts (docker-compose.prod.yml:51). docs/smoke-test.md:42 confirms these scripts have never been run.
+  - Fix: With api and web stopped, run DROP DATABASE and CREATE DATABASE (or DROP SCHEMA public CASCADE) before restoring, then use `pg_restore --exit-on-error --single-transaction` without --clean, and print a clear failure message.
+- **Documented POSTGRES_PASSWORD generator breaks DATABASE_URL about 40% of the time** `docker-compose.prod.yml:31`
+  - Impact: On a first install where the password contains `/`, the `migrate` service should fail on the unparsable connection URL, so api never starts because of the depends_on at docker-compose.prod.yml:51. docs/deployment.md:102 blames 'database not ready or wrong POSTGRES_PASSWORD'. By then the volume is initialised with that password, so the operator has to wipe the volume or change the role password.
+  - Fix: Change the documented generator to `openssl rand -hex 24` in both the example file and the docs.
+- **Palette claim is false: Tailwind v4 semantic and slate colours are not the owner's hex values** `docs/architecture.md:205`
+  - Impact: The owner asked for an exact palette. Every danger button, success, warning and info badge, and all secondary text renders a visibly different colour from the specified hex, while the doc and the CSS comment state they match.
+  - Fix: In @theme, define --color-red-600: #DC2626, --color-green-600: #16A34A, --color-amber-500: #F59E0B, --color-cyan-600: #0891B2, --color-slate-500: #64748B, --color-slate-900: #0F172A (or semantic tokens). Then correct the doc and the comment.
+- **Updating as documented never adds new permission rows, so new modules return 403 even for super admins** `docs/deployment.md:53`
+  - Impact: An installation seeded before customer_groups was added and then updated per section 3 has no `customer_groups:*` rows. Every user, including super admins, gets 'Missing permission: customer_groups:view'. The planned new roles and modules will hit the same problem at each update.
+  - Fix: Add an idempotent seed step after `migrate deploy` in the compose `migrate` flow, or make each migration insert its new permissions, and document it in section 3.
+- **Documented cron line never runs on a fresh install, so no backups are taken** `docs/deployment.md:63`
+  - Impact: On a server installed as documented, cron fails every night with `backups/backup.log: No such file or directory` and backup.sh never starts. The only trace is cron's own mail or syslog, and nothing in the stack monitors backup freshness (check.sh does not). The owner finds no backups when they need one, unless someone happened to run the script by hand first.
+  - Fix: Write the log outside that folder or add `mkdir -p backups` to the cron line and install steps, for example `cd /opt/costing && mkdir -p backups && ./deploy/backup.sh >> backups/backup.log 2>&1`.
+- **TRACKED GAP (not built): per-customer-group prices** `packages/costing-engine/src/costing.ts:215`
+  - Impact: An admin can set a dealer or retail margin, but no price anywhere uses it. The field has no effect on any figure.
+  - Fix: Build part 3 of /home/zatgo/.claude/plans/indexed-skipping-lamport.md.
+- **A GST-inclusive AFTER_GST expense loses its GST, so total cost is understated** `packages/costing-engine/src/costing.ts:299`
+  - Impact: Computed. Material 1000, GST 18%, expenseRatesIncludeGst on (settings/page.tsx:154), expense entered as 118 AFTER_GST. Result: after 100, GST 180, total 1280, selling 1536. The company actually paid 118, so total should be 1298. The same 118 entered as BEFORE_GST gives total 1298 and selling 1557.60. The missing 18 per 118 entered (15.25%) also carries through markup, so selling is short by 21.60.
+  - Fix: Only strip GST when the expense is taxed: `if (e.method !== 'PERCENTAGE' && e.timing !== 'AFTER_GST') amount = netOf(...)`. Extend the invariant test to compare totalCostInclGst.
+- **Administrators cannot configure which pricing mode (Live or Snapshot) applies to documents** `packages/validators/src/costings.ts:60`
+  - Impact: An admin cannot keep a draft costing on frozen rates, or choose a default mode per document type. Every costing is LIVE until approved.
+  - Fix: Add a default mode per document type to app settings and a permission-checked per-costing `pricingMode`. Make `prepare` and `recalculate` honour SNAPSHOT by reusing stored rates.
+- **Configurable decimals 3 to 6 are accepted but all money columns are Decimal(x,2), so saved figures differ from calculated ones and documents stop adding up** `packages/validators/src/costings.ts:96`
+  - Impact: With decimals=3, three quotation lines with gross 0.335 each store 0.34 each (sum 1.02), but subtotal 1.005 stores 1.01, which breaks the claim that printed quotations always add up (docs/architecture.md:80). With decimals=3 and rounding DOWN, a selling price of 100.129 is stored as 100.13, above the rule's result. Preview returns 3 dp and the saved record has 2. With roundLines=false the same happens at the default decimals=2: unrounded line totals are stored rounded, so stored lines do not sum to stored totals. The number-of-decimals requirement (master prompt 7.2) does not work above 2.
+  - Fix: Either cap decimals at 2 in calcRulesSchema (max supported scale) or migrate money columns to scale 6 and make web, PDF and Excel formatters use the document's stored rules.decimals.
+- **Decimal places setting allows up to 6, but all money columns are DECIMAL(18,2)** `packages/validators/src/costings.ts:96`
+  - Impact: With decimals=3, two lines of 12.345 give preview basic 24.690. Saved lines are 12.35 + 12.35 = 24.70 while saved basic is 24.69. Rounding 'DOWN' is not honoured, and printed quotations no longer add up. The recalculate signature (costings.service.ts:414-424) compares 12.35 with 12.345, so every costing reports CHANGED and gets a new version on every run.
+  - Fix: Either cap decimals at the column scale (max 2) in calcRulesSchema and the settings screen, or widen every money column and migrate them.
+- **Approved costings do not freeze names, codes or unit symbols** `prisma/schema.prisma:654`
+  - Impact: Rename item 'Metal Pipe MAX' to 'Steel Tube', or edit a unit symbol. Every approved costing's PDF, Excel and report rows now show the new text, including a material or unit that was never on the approved sheet. The history cannot be recovered.
+  - Fix: Copy item name and code, labour and expense names, group and category names, and unit symbols onto the costing rows on save, and render those copies in print, Excel and reports.
+- **TRACKED GAP (not built): 'publish to pricelist' tick box** `prisma/schema.prisma:1037`
+  - Impact: Nothing can be ticked to publish a costing to the price list.
+  - Fix: Build part 3 of the plan (published, publishedAt and publishedBy, plus the endpoint).
+
+### Medium
+
+- **Smoke-admin credentials and prisma/.env are not excluded from the Docker build context** `.dockerignore:6`
+  - Impact: A rebuild after running smoke-admin.sh should put a working super admin password and the dev database URL into the API image's filesystem. Anyone with access to the image or a registry copy can read them, and the owner has been told the file is protected.
+  - Fix: Add `.smoke-credentials`, `**/.env`, `**/.env.*` and `!.env.example` to .dockerignore, then rebuild, and rotate or delete the smoke admin.
+- **Super admin smoke credentials are copied into the API image, and the suggested cleanup does not exist** `.dockerignore:8`
+  - Impact: After smoke-admin.sh has run, any later `up -d --build` writes the super admin email and password to /app/.smoke-credentials in the image, readable by the API process's user. Anyone with the image (registry, tar export, container shell) gets a working super admin login, because the user can only be deactivated, not deleted, and the instruction misleads the operator into thinking it can be removed.
+  - Fix: Add `.smoke-credentials` and `*.log` to .dockerignore. Change the script comment to say 'deactivate', or add a delete-user path. Run deactivation at the end of the smoke test.
+- **API image is the whole build stage, not the 'compiled app' its comment describes, and the code is writable at runtime** `Dockerfile:37`
+  - Impact: The production image ships source, tests and build tools that are not needed at runtime, which is also why the credentials file ends up inside it. A compromised API process can rewrite /app/apps/api/dist or node_modules and the change survives until the container is recreated.
+  - Fix: Add a separate runtime stage using `pnpm deploy --prod` for the API, with the Prisma CLI kept only in a dedicated migrate target. Chown only /data.
+- **README setup fails on a fresh checkout: Prisma never reads the root .env it tells you to create** `README.md:7`
+  - Impact: A new developer following the README gets a Prisma env error at step 3. After working around it, they have an empty database and no login.
+  - Fix: Add a `prisma/.env` step (or a dotenv wrapper in the scripts), and add `pnpm db:seed` with SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD to the README.
+- **The global throttle of 120 requests per minute per IP is low for a whole office, and it also covers token refresh** `apps/api/src/app.module.ts:29`
+  - Impact: Users behind one office NAT share a single 120 per minute budget. Ten users with per-keystroke search and live costing previews will exceed it and see 429 errors on ordinary screens. If the 429 lands on refresh during a page reload, the user is sent to the login page.
+  - Fix: Throttle authenticated traffic per user rather than per IP (a custom ThrottlerGuard getTracker), keep strict IP limits on the public auth routes, and exempt or separately limit /auth/refresh.
+- **Refresh theft detection fires on normal revocations and signs the user out everywhere** `apps/api/src/auth/auth.service.ts:77`
+  - Impact: A user is signed in on a laptop and a phone. They change their password on the laptop, or click Revoke for the phone under Active sessions. Later the phone opens the app, sends its revoked cookie, and the server revokes every session, including the laptop session it just promised to keep. The audit log records a false 'refresh_token_reuse' theft event. Anyone holding an old cookie can also force this on demand.
+  - Fix: Add a `rotatedAt` or `replacedBySessionId` column to Session and run reuse detection only for tokens that were rotated. A token revoked by logout, the user or a password change should just return 401.
+- **Older password reset tokens stay valid after a reset or password change** `apps/api/src/auth/auth.service.ts:112`
+  - Impact: An attacker with read access to the log, or an old reset link, keeps a working token for up to 60 minutes. The victim notices, resets with a newer link or changes their password, and the older token still sets a new password and revokes the victim's sessions. Two concurrent requests with the same token can both succeed. A deactivated user's outstanding token can still change their password hash and clear mustChangePassword.
+  - Fix: In the same transaction, run `updateMany({ where: { userId, usedAt: null }, data: { usedAt: now } })` and require count > 0 for the presented token by filtering on id and usedAt null. Do the same from changePassword and the admin reset. Also check user.isActive.
+- **Authentication issues 8 queries before every API handler** `apps/api/src/auth/auth.service.ts:137`
+  - Impact: Every request, including each search keystroke and each costing preview, spends 8 round trips on auth. On a simple list endpoint that is about as much as the work itself. The dashboard poll, per-keystroke search and previews all pay it.
+  - Fix: Use one query selecting only permission keys (raw SQL or relationJoins), or cache effective permissions for a few seconds keyed by user id and evict on role, permission or user change. Keep the session revocation check live.
+- **'Must change password at first login' is enforced only by a one-time browser redirect** `apps/api/src/auth/auth.service.ts:153`
+  - Impact: A seeded admin, or a user given a temporary password by an admin, can skip the change. They can click away from /profile or call any API route with the temporary password indefinitely, including all super admin actions.
+  - Fix: Reject requests in the guard (except change-password, me and logout) while mustChangePassword is true, and test it. Otherwise change the docs to say it is only a prompt.
+- **No test pins which permission approve, reject and reopen need, so the freeze guard can regress silently** `apps/api/src/common/route-audit.spec.ts:132`
+  - Impact: If `@RequirePermission('costing','approve')` on POST /costings/:id/approve or /reopen is changed to ('costing','create'), Staff can approve and reopen frozen costings and all 412 tests still pass.
+  - Fix: Add an explicit map to route-audit.spec, for example 'POST /costings/:id/approve' -> 'costing:approve', covering reject, reopen, quotation approval, rate management and recalculation apply. Assert Staff is denied those exact routes.
+- **Each costing preview repeats about 20 queries, reading the same items twice and the entire unit table** `apps/api/src/costings/costings.service.ts:94`
+  - Impact: Every pause while typing in the costing editor (450 ms debounce) costs about 28 to 38 queries including auth. The same waste is multiplied by each costing in recalculation previews and applies, so this is the main per-costing cost in that loop.
+  - Fix: Have validateTree return its loaded maps, or take a shared preload with suppliers included, so prepare reuses them. Load only the units referenced. For preview, select only custom rows of the existing costing.
+- **Area / Conversion master has no effect on any calculation** `apps/api/src/costings/costings.service.ts:137`
+  - Impact: An admin saves '1 Meter = 3.15 KG' for Pipe in that master. Using Meter on a costing still returns 400 'Unit M cannot be used for Pipe', and a purchase in Meter is also refused. The formula type and the rule are never read.
+  - Fix: Have the unit resolution consult item-specific and generic AreaConversion rows (and reject or implement CUSTOM_FORMULA), or remove the master so users are not misled.
+- **Rate fallback permanently overwrites the user's chosen rate basis** `apps/api/src/costings/costings.service.ts:152`
+  - Impact: A row uses AVERAGE and the item's only purchase is deleted, or a SUPPLIER row's supplier is removed from the item and re-added. The batch rewrites the row to STANDARD. When averages or the supplier rate return, the row stays on the standard rate and the user is not told.
+  - Fix: Store the requested basis, keep fallback state separately (or compare at read time), and keep resolving the requested basis on each recalculation. Record warnings on the RecalculationItem.
+- **Staff cannot save or preview a costing from a template that has a labour rate override** `apps/api/src/costings/costings.service.ts:162`
+  - Impact: A template with a labour rate override, which the import offers as the 'Rate Override' column (import.service.ts:43), makes POST /costings/preview and POST /costings return 403 'no permission to enter custom rates' for a Staff user. That user cannot see or enter the rate, and the template flow fails for them.
+  - Fix: Pass the template's rates into prepare as allowed values when input.templateId matches and the rate is unchanged, as keptLabour does for existing costings.
+- **Expense value, method and timing overrides have no permission check, unlike custom material and labour rates** `apps/api/src/costings/costings.service.ts:172`
+  - Impact: A Staff user who cannot override a material or labour rate can set a master expense of 500 to value 0, or switch a percentage to FIXED 1. Basic cost and selling price drop, and the changed row is saved.
+  - Fix: Apply the same rule as labour: if a field differs from the master and from the existing stored override, require costing:manage_rates.
+- **A QUANTITY_BASED company expense is always multiplied by 1, and users cannot correct it** `apps/api/src/costings/costings.service.ts:188`
+  - Impact: Computed. A company expense of 5 per unit on a costing with quantity 100 adds 5 instead of 500. It behaves exactly like FIXED, and the user has no way to change it, so basic cost and everything after it are understated by 495 before GST and markup.
+  - Fix: For company rows use the costing quantity as the multiplier when method is QUANTITY_BASED, or reject QUANTITY_BASED when isCompanyExpense is true.
+- **QUANTITY_BASED company expense is always multiplied by 1** `apps/api/src/costings/costings.service.ts:188`
+  - Impact: An admin sets a company expense of 5 per piece and a costing has quantity 100. The charge is 5 instead of 500, and costing totals are for the whole quantity (netSellingPrice divides by it), so per-unit price is understated.
+  - Fix: Pass the costing quantity for QUANTITY_BASED company rows, or reject that method with isCompanyExpense in the validator.
+- **Revision snapshots do not contain line rates or company expense rows, so approved line figures are lost after reopening** `apps/api/src/costings/costings.service.ts:300`
+  - Impact: A costing is approved at item rate 98, then reopened and edited or recalculated at 105. No revision says what rate, line total or company expense value was approved, so the approved calculation cannot be reconstructed or audited line by line.
+  - Fix: Store resolved rows in the snapshot: rate, effectiveQuantity and total for materials, rate and total for labour, and all expense rows with amount and isCompany, plus the rules.
+- **A recalculation batch silently turns REJECTED costings into DRAFT and wipes the rejection reason** `apps/api/src/costings/costings.service.ts:376`
+  - Impact: An approver rejects a costing with a reason. A later rate change is applied by an admin or AUTO mode, and the costing becomes DRAFT with rejectionReason null, though the preparer never edited it. The rejection banner disappears and the reason survives only in the audit log.
+  - Fix: Pass a flag from recalculate() so persist keeps status and rejectionReason. Only a user edit should move REJECTED to DRAFT.
+- **Background recalculation moves a rejected costing to DRAFT and erases the rejection reason** `apps/api/src/costings/costings.service.ts:376`
+  - Impact: An approver rejects with 'wrong supplier' and an item rate changes minutes later. In AUTO, or on any batch apply, the costing silently becomes DRAFT with rejectionReason null before the preparer sees it. Only the audit log still holds the reason.
+  - Fix: Have recalculate keep status and rejectionReason. Only a user's edit should clear rejection.
+- **Recalculation reports CHANGED forever when a stored rate differs from the unrounded rate, and writes needless versions** `apps/api/src/costings/costings.service.ts:414`
+  - Impact: Any costing with a material in a converted unit whose rate has more than 4 dp is never UNCHANGED. Preview says 'N costing(s) will change (total selling price +0.00)'; 'Refresh rates' always reports a change; every batch apply and AUTO run bumps the version and adds a revision with identical money. With decimals=3 or roundLines=false, every live costing shows as changed. Admins cannot see which costings really moved.
+  - Fix: Compare at column scale (round fresh rate to 4 dp and totals to the stored scale before building the signature), or store the rate at the scale the engine used.
+- **Signature comparison reports CHANGED forever when stored scale is smaller than calculated scale** `apps/api/src/costings/costings.service.ts:415`
+  - Impact: Rate 20.94 per base unit with factor 0.3048 gives fresh rate 6.382512 against stored 6.3825. Every recalculation returns CHANGED with identical before and after. Each refresh or batch adds a version and revision, writes an audit row and counts as 'applied', contradicting docs/architecture.md:132 ('not rewritten'). With decimals=3 or roundLines=false this affects totals on every costing.
+  - Fix: Round fresh values to the column scale before comparing, or better, round the row rate to 4 dp in prepare. Limit rules.decimals to the money column scale.
+- **Flagging an existing expense as company expense can return UNCHANGED, leaving companyExpenseCost at 0** `apps/api/src/costings/costings.service.ts:416`
+  - Impact: A draft has own row 'Overhead' FIXED 100 at the master default. The admin ticks Company expense and the COMPANY_EXPENSE batch reports UNCHANGED. The row stays isCompany=false, Costing.companyExpenseCost stays 0, get().companyExpenses is empty and the row remains user-removable. If approved next, the wrong split is frozen, and the planned cost report would read this column.
+  - Fix: Include companyExpenseCost and each expense row's expenseId and isCompany in both signatures.
+- **A change to the profit-base rule never reaches live costings because profit % is missing from the signature** `apps/api/src/costings/costings.service.ts:417`
+  - Impact: An admin switches 'Profit % is measured against' from basic to total cost. The RULES batch shows every costing unchanged and applies nothing. Stored profitPercent and Costing.rules stay on the old rule, so the costing list, profit report and Excel exports keep showing the old %. New saves use the new rule, so the two sets are not comparable, and the settings hint says costings can be updated from the recalculation workflow.
+  - Fix: Add profitPercent, markupAmount, extraAmount and companyExpenseCost (or a hash of the rules) to the signature.
+- **Costings pending approval are skipped by recalculation, then can be approved and frozen at stale rates with no check** `apps/api/src/costings/costings.service.ts:455`
+  - Impact: A costing is submitted at item rate 100 and the rate moves to 150. The batch item is SKIPPED. The approver approves and 100 is frozen as if current. No warning and no review flag on the costing. The same happens for a DRAFT approved directly while a CONFIRM batch is still pending.
+  - Fix: On approve, run recalculate with dryRun and return a warning or require explicit confirmation when figures differ, recording the before and after in the revision note.
+- **Template with a labour rate cannot be used by anyone without costing:manage_rates, including seeded Staff** `apps/api/src/costings/costings.service.ts:490`
+  - Impact: A Staff user (seed: costing view/create/print, apps/api/src/seed/seed.ts) opens a template with a labour override. Every preview and save returns 403 'You do not have permission to enter custom rates', with no way to fix it in the UI.
+  - Fix: Treat a rate equal to the referenced template's labour rate as allowed in prepare, or have fromTemplate blank the rate when the caller lacks manage_rates.
+- **The trigram indexes cannot be used by the searches they were built for, because each OR includes an unindexed column** `apps/api/src/costings/costings.service.ts:545`
+  - Impact: Each search keystroke does a sequential ILIKE scan plus a second one for count(). The indexes still add write cost on those tables but give these searches no benefit.
+  - Fix: Add gin_trgm_ops indexes on the missing columns (productCode, Quotation.subject, Item.description, Template.code and the contact fields), or drop those columns from the OR. Confirm with EXPLAIN.
+- **'Edit and re-import' cannot work: export files are rejected on import, and customer group and company expense flag are dropped** `apps/api/src/data/import.service.ts:141`
+  - Impact: Export items, change 50 rates, re-import: all rows come back as duplicates and confirm says 'nothing was imported' (or with skipInvalid, 'There are no valid rows to import'). Moving customers to a new install loses every customer's group and so their margin. Company expenses come back as ordinary expenses and are no longer added automatically.
+  - Fix: Add an update mode that matches rows by code through MasterService.update, so changes are audited and recalculation fires. Add Customer Group Code and Company Expense columns plus a customer-groups kind. Otherwise correct the export text and docs.
+- **The app says exports can be 'edited and imported again', but import refuses existing records** `apps/api/src/data/import.service.ts:141`
+  - Impact: A user exports items, corrects 200 rates and re-imports. Every row is rejected or skipped, and no record changes.
+  - Fix: Implement update-by-natural-key on import, through the same change-bus announcements as the screens. Otherwise, change the export text and docs to say import only creates new records.
+- **Price list import that fails midway leaves earlier lists committed, with no history or audit, and a retry duplicates them** `apps/api/src/data/import.service.ts:319`
+  - Impact: File with 3 lists; the second fails because a costing was reopened after re-validation, or a number could not be allocated. List 1 stays in the database, the user gets an error and no import history row. Re-uploading the fixed file creates a second copy of list 1. Uploading the same file twice also silently creates duplicate drafts.
+  - Fix: Catch per list and record successes and failures in importHistory. Flag same-named draft lists in the preview, or support an all-or-nothing option.
+- **Excel gaps: no template export, customer groups and area conversions unsupported, group and company flags dropped** `apps/api/src/data/kinds.ts:65`
+  - Impact: Customer groups and conversions cannot be moved through Excel. An exported company expense looks like an ordinary one, and any company expense created by import becomes a normal expense that is not auto-added to costings. Customer group assignment is lost on export, and templates cannot be exported at all.
+  - Fix: Add customer-groups and conversions kinds, a Customer Group Code column on customers and a Company Expense Y/N column on expenses. Add a templates export in the import layout, or correct acceptance #17.
+- **Editing Unit.baseFactor does not announce a change, so live costings keep the old conversion** `apps/api/src/masters/masters.config.ts:64`
+  - Impact: Correct FT from 0.33 to 0.3048. Purchases from then on use the new factor, but no batch is raised and live costings stay priced on the old factor until an unrelated recalculation or manual refresh.
+  - Fix: Add a watch on baseFactor and unitType, with a new RecalcKind value (or ITEM_UNITS per affected item), and add the matching migration.
+- **Unit soft delete ignores costing headers and quotation lines, and those columns are unvalidated** `apps/api/src/masters/masters.config.ts:66`
+  - Impact: Delete unit SET, used only as a costing's quantity unit. A new quotation line from the approved costing fails with 'Selected unit does not exist' unless a unit is picked. A draft quotation line using that unit cannot be saved or repriced. The frozen costing's PDF prints 'SET~deleted~ab12cd34' as its unit.
+  - Fix: Add those three references to the units config. Validate unitId and dimensionUnitId in prepare(), and add FKs with Restrict in a new migration.
+- **Changing rate method or enabling Min/Max/Average does not recompute from purchases** `apps/api/src/masters/masters.config.ts:152`
+  - Impact: An item has purchases 100 x 10 and 120 x 30 under LAST_PURCHASE, so the rate is 120. An admin switches to WEIGHTED_AVERAGE and the rate stays 120 instead of 115 until the next purchase. Turning on hasRateRange with existing purchases leaves min/max/avg null unless typed, so MIN/MAX/AVERAGE rows fall back to STANDARD.
+  - Fix: After an item update that changes rateMethod or hasRateRange, run recalcItem in the same transaction and announce the result.
+- **items:edit changes purchase rates without purchase_rates:manage_rates or a reason** `apps/api/src/masters/masters.config.ts:154`
+  - Impact: A role with items:edit and no rate permission edits an item's rate. This moves live costings through the ITEM_RATE recalculation, skips the manage_rates control and records no reason.
+  - Fix: In the items config, refuse changes to rate fields unless the actor has purchase_rates:manage_rates. This needs the actor passed into cfg.validate. Apply the same to rates in imported items.
+- **Re-parenting an item, category or group makes every live costing containing it fail recalculation** `apps/api/src/masters/masters.config.ts:199`
+  - Impact: Move an item to another category. Later batches report FAILED for each costing using it, leaving the batch PARTIAL on every retry, and the costing keeps its old rate. Refresh rates and save return 400, and an approved costing's screen shows 'Complete the required fields to see totals.'
+  - Fix: Refuse hierarchy changes while non-deleted template or costing lines reference the row, or have validateTree accept rows already stored on the existing document.
+- **Mixed GST (ITEM mode) and after-GST expenses are converted using the single costing GST % in price lists and quotations** `apps/api/src/price-lists/price-lists.service.ts:49`
+  - Impact: ITEM mode, header GST 18%, all items 5%, basic 100, total 105. A TOTAL_COST + EXCLUSIVE list gives cost 105/1.18 = 88.98 ex-GST, below the real basic cost of 100, and shows 18% GST. BASIC_COST + 20% gives incl. price 141.60 instead of 126.00. Default-mode case: basic 100, GST 18, after-GST 50, total 168: ex-GST base 142.37 and GST 25.63 against a true 18.00.
+  - Fix: Pass the costing's real GST amount (or effective rate = gstAmount/basic) into calculatePrice, and treat after-GST expenses as non-taxable in the conversion.
+- **Editing a price list breaks later saves of quotations that reference its items** `apps/api/src/price-lists/price-lists.service.ts:137`
+  - Impact: Quote from an active list, revert the list to draft, edit one profit, activate again. Every quotation with a line from that list now fails on Save, Reprice, or Revise then Save with 'items.N.priceListItemId: Price list item not found' until the line is removed and re-added.
+  - Fix: Update price list items in place, matching on costingId and keeping ids, as reprice() does at line 184.
+- **Rates are displayed at 2 decimals in PDFs, prints and reports, although stored at 4 to 6** `apps/api/src/print/pdf.ts:15`
+  - Impact: A rate of 0.0125 per gram prints 0.01, so qty 5,000 x 0.01 appears to total 62.50. A price-list-sourced unit price of 33.3333 prints 33.33 with 3 pieces totalling 100.00. In the Rate Change Impact report, a change from 0.0125 to 0.0134 shows Old 0.01, New 0.01, Change 7.20%. In the purchase rate report small rates all collapse to 0.01 or 0.00.
+  - Fix: Add a `rate` column type and formatter (up to 4 to 6 dp, no forced rounding to 2) and use it for all rate and unit price fields in PDF, web print, Excel and reports.
+- **Full costing data can be read without costing:view through print, export and save-as-template** `apps/api/src/print/print.controller.ts:25`
+  - Impact: An admin sets a user-level DENY on costing:view, as the spec allows ('customize every permission for every individual user'). If the role still gives costing:print, the user gets the same data as JSON from /print/costings/:id. A templates:create user can copy any costing's recipe and photos, including approved ones.
+  - Fix: In print and export, require view as well as print/export, for example with a service check as in reports.service.ts:24. Add a costing:view check in saveAsTemplate.
+- **Print service sums money with JS floats and hard-codes 2 decimals, ignoring the decimals rule** `apps/api/src/print/print.service.ts:65`
+  - Impact: With decimals set to 3 and line totals 1.005 + 2.005, the printed group total and report totals are worked out from JS floats or 2-decimal rounded values, so they can differ from the engine's stored totals. At the default 2 decimals the results are normally correct, so reach is limited to changed settings, but the rule is still broken.
+  - Fix: Have the engine or costing service provide per-group totals using Decimal, and sum with Decimal in print and reports. Format using the costing's stored rules.decimals.
+- **Price lists show the whole-batch price with no quantity, and the selling price report puts it beside per-unit figures** `apps/api/src/print/print.service.ts:190`
+  - Impact: A costing for quantity 10 with selling 10,000: the price list a customer receives shows 10,000 against the product, not 1,000 per piece. FIXED profit, min and max price are also per batch, while the same list item quotes at 1/10 on a quotation. In the selling price report the list price looks ten times the unit figures.
+  - Fix: Show the costing quantity and a per-unit price on price list screens and exports, and report the per-unit list price (effectiveExGst / quantity) in the selling price report.
+- **Price list PDF and Excel GST column shows GST on the undiscounted price next to a discounted total** `apps/api/src/print/print.service.ts:191`
+  - Impact: List 1000, discount 100, GST 18%: the printed row reads 1000 / 100 / GST 180 / incl. 1062. 1000 - 100 + 180 = 1080, not 1062. The correct GST is 162, so a customer-facing price list does not add up.
+  - Fix: Have the engine return effectiveGst (effectiveInclGst - effectiveExGst), store or derive it, and print that in the column beside the discount.
+- **Rate export can loop forever, and two exports ignore the documented 50,000 row cap** `apps/api/src/purchase-rates/rates-excel.service.ts:60`
+  - Impact: During a large purchase-rate export, another user deletes one entry after `total` is read. Pages run out with `all.length` one short of `total`, and the loop keeps querying empty pages for ever, with the request never returning and the DB loaded continuously until restart. Without any deletion, exports still have no row limit, and the ExcelJS workbook is built in memory.
+  - Fix: Add `if (!r.items.length) break;` as costingSummaries already does, apply MAX_EXPORT_ROWS with one findMany in both exports, and use a select without image signing for the costing export.
+- **Purchase-rate import runs up to 7 queries per row, validates twice, then writes row by row inside a 60 s transaction** `apps/api/src/purchase-rates/rates-excel.service.ts:141`
+  - Impact: A 5,000 row file takes about 30,000 queries to preview and about 30,000 again on confirm, before any insert. On a loaded server the insert phase can pass 60 s, Prisma aborts the transaction and the whole import fails after the user has waited minutes.
+  - Fix: Load items with unit and conversions, plus an existing-entry key set for the file's items, once before the loop, and make normalise take the preloaded objects. Use createMany for inserts. Keep the parsed preview rather than re-validating, or re-validate with the same batched lookups.
+- **Costing-line quotes round the unit price to money decimals before multiplying, which distorts low-value, high-quantity products** `apps/api/src/quotations/quotations.service.ts:92`
+  - Impact: Computed. Basic 1234.56, quantity 10000, profit 20%: the exact value is 1481.47. perUnit is 0.123456, the unit price rounds to 0.15, and the quote taxable amount is 1500, which is 18.53 too high (+1.25%). With quantity 1000 the unit price is 1.48 and taxable is 1480, which is 1.47 too low. netBasicRate for the first case is stored as 0.12 against a real 0.1235.
+  - Fix: Compute the unit price at 4 or more decimals for quotation lines, as the price list path does, and round only the line amounts.
+- **Quotation lines from a 'no GST' price list get charged the costing's GST** `apps/api/src/quotations/quotations.service.ts:102`
+  - Impact: A list with 'GST not applicable' and price 1,000 is added to a quotation: taxable 1,000 + 18% GST = 1,180. The customer is quoted 18% more than the list says unless the user notices and types 0.
+  - Fix: When gstTreatment is NONE, default the line's GST to 0 (or store the effective GST % on the price list item).
+- **A quotation line from a "No GST" price list still has GST added** `apps/api/src/quotations/quotations.service.ts:102`
+  - Impact: List with treatment NONE, effective price 1200, costing GST 18%: the quotation totals 1416 although the list says the price has no GST.
+  - Fix: In the PRICE_LIST branch use 0 when `p.priceList.gstTreatment === 'NONE'` and the user entered no GST.
+- **quotations:view or price_lists:view can read the internal cost of any approved costing without costing:view** `apps/api/src/quotations/quotations.service.ts:124`
+  - Impact: A user with quotations:view and no costing:view opens a quotation to get items[].costingId, then posts a preview with {source:'COSTING',costingId,profitPercent:'0',quantity:'1'}. The returned unitPrice is the per-unit basic cost. This breaks 'Do not expose sensitive supplier or financial information to unauthorized users' (master prompt line 1283).
+  - Fix: When a preview payload carries a costingId, require costing:view, or quotations:create or price_lists:create as appropriate. For COSTING lines, refuse a caller-supplied profitPercent unless the actor has that permission.
+- **Final writes on documents do not re-check status, so workflow races change locked documents** `apps/api/src/quotations/quotations.service.ts:191`
+  - Impact: Save racing Send: a SENT quotation's lines and totals change after sending, despite the comment at schema.prisma:988-989. Save racing Submit: the costing returns to DRAFT and the submission is lost. Reject racing Approve: the final state is REJECTED with pricingMode SNAPSHOT and approvedById set; once edited it never recalculates (lines 408 and recalc.service.ts:95) and is frozen in DRAFT until re-approved. Double approve returns a raw 500.
+  - Fix: Inside each transaction use updateMany with { id, status: expected, version: expected } and return 409 on count 0, and set pricingMode only with the matching status change.
+- **Reprice keeps the old GST % and margin on linked quotation lines** `apps/api/src/quotations/quotations.service.ts:236`
+  - Impact: A line was saved with blank profit % when the costing markup was 20% and GST 12%. The costing is reopened, changed to markup 30% and GST 18%, and re-approved. 'Reprice from sources' updates the cost but keeps 20% and 12%, and the stale flag clears (lines 236-237). The quotation can then be sent with the wrong margin and tax.
+  - Fix: Store whether profit and GST were user overrides (as costing expenses do with overrideFields) and echo only overrides in the payload, so reprice re-reads the source values.
+- **Quotation Reprice keeps the old GST % and profit %, and still clears the stale state** `apps/api/src/quotations/quotations.service.ts:236`
+  - Impact: Costing GST changes from 18 to 12 and markup from 20 to 30, then it is re-approved. Reprice updates the cost and costingVersion and clears the stale flag and review flags, but the quotation still charges 18% GST and 20% profit. It can then be sent with no warning.
+  - Fix: In reprice, blank gstPercent on all linked lines, and blank profitPercent on lines that were not explicitly overridden. This needs a stored flag marking an override.
+- **Revising a sent or approved quotation destroys the figures the customer saw** `apps/api/src/quotations/quotations.service.ts:264`
+  - Impact: Sent quotation QTN-2026-0007 at 1,00,000 is revised and resaved at 90,000 under the same number. The earlier lines and total exist nowhere in the database, only in old backups.
+  - Fix: Add a QuotationRevision table and write a full snapshot (header and items) inside the revise transaction, or make revise create a new linked draft and leave the original untouched.
+- **Expiry sweep runs only from quotation endpoints, so dashboard, Quotation report and quotation export show expired quotations as live** `apps/api/src/quotations/quotations.service.ts:297`
+  - Impact: Open the dashboard or Quotation report after validity has passed: quotations still count as SENT or PENDING, with their value, until someone opens the quotation screens. Status changes to EXPIRED leave no audit entry, against the 'keep audit logs' rule.
+  - Fix: Run the sweep on a timer in MaintenanceService (or call it from these readers), and write an audit entry with the count.
+- **The notes field labelled 'Internal / customer notes' is shown to customers on the public link and the PDF** `apps/api/src/quotations/quotations.service.ts:356`
+  - Impact: A salesperson types an internal remark, such as 'floor price, margin only 4%, approved by MD', into the field the UI calls internal. It then appears to anyone with the unauthenticated share link and on the PDF sent to the customer.
+  - Fix: Rename the field to 'Notes (printed for the customer)'. If internal remarks are needed, add a separate internalNotes column and leave it out of publicView and the PDF.
+- **Quotation staleness only looks at the costing, so changed or archived price list items go unnoticed** `apps/api/src/quotations/quotations.service.ts:400`
+  - Impact: List item goes from 1000 to 1200 (profit edited, reactivated). A quotation line priced at 1000 from that list shows no stale marker and can be sent at the old price. Archiving or deleting the list is not flagged either, and Reprice then fails with 'price list is not active' with no earlier warning.
+  - Fix: For PRICE_LIST lines, load the item and its list, and flag when it is missing, the list is not active, or the item's effectiveExGst / quantity differs from the line's unitPrice.
+- **Change-bus failure silently loses the batch, review flags and rate history** `apps/api/src/recalc/change-bus.ts:35`
+  - Impact: A rate is edited during a transient DB error or a process restart. The rate is committed and the user sees success, but there is no recalculation batch, no flags on open quotations and no PurchaseRateHistory row, contradicting the append-only history described in docs/architecture.md:33. Nothing retries until the same source changes again, and only the server log shows it.
+  - Fix: Write a change/outbox row in the same transaction as the master change and process it with retry. At minimum move the history write into the master transaction.
+- **Recalculation routes expose costing figures and rate changes across the permission boundary** `apps/api/src/recalc/recalc.controller.ts:21`
+  - Impact: A purchasing clerk with purchase_rates:view reads basic cost and selling price of affected costings. Seeded Staff (costing:view, 'Purchase Rates: no access' in the spec table) can call preview and read purchase rate changes. Each such call also runs up to 500 dry-run recalculations.
+  - Fix: In get(), strip the before/after figures and costing identity unless the actor has costing:view. In preview(), add a service check for purchase_rates:view, as apply does.
+- **A rate change never updates derived price lists, not even drafts; they are only flagged** `apps/api/src/recalc/recalc.service.ts:144`
+  - Impact: After a rate change a draft list keeps old prices until someone opens it, sees the flag and acts, and repricing returns the same frozen figures unless the costing is reopened and re-approved. This is a defensible design, but it is not what the spec line says, so the owner should decide.
+  - Fix: Get the owner's decision. If updates are wanted, reprice DRAFT lists from a new costing approval and add a guided path for ACTIVE lists. Otherwise record the deviation as accepted.
+- **A recalculation batch can stay in APPLYING forever** `apps/api/src/recalc/recalc.service.ts:231`
+  - Impact: An API restart during Apply leaves the batch stuck: it cannot be applied or dismissed, the remaining costings are not processed, and item rows are lost. In normal use: an admin applies a large batch, a purchase of the same item creates batch B2, and the first batch ends with one skipped pending costing. Its status change to PARTIAL then violates the unique index with P2002. The admin gets a 500 and the batch never leaves APPLYING.
+  - Fix: Wrap the run in try/finally to restore the status. Before setting PARTIAL, merge into any open batch or end as APPLIED with counts. Reset stale APPLYING batches at startup.
+- **A dismissed or still-pending rate change is applied by the next batch that touches the same costing** `apps/api/src/recalc/recalc.service.ts:239`
+  - Impact: An admin dismisses 'Pipe: rate 98 → 150' with a reason. Later a 1% labour batch is applied, and the same costings take Pipe at 150. The revision note says the labour change caused it. In CONFIRM mode this also bypasses review of a pending batch, which then shows UNCHANGED.
+  - Fix: Have the preview and apply result itemise other master differences per costing, and name them in the revision note. Or restrict a batch to its source and carry dismissed values forward explicitly.
+- **Batch can stick in APPLYING permanently: partial index conflict on finish, and no recovery** `apps/api/src/recalc/recalc.service.ts:250`
+  - Impact: An admin applies a batch containing a pending-approval costing while someone edits the same item's rate. The final update throws P2002, the apply returns 500, and the batch stays APPLYING forever, with costings already rewritten and no audit row. A process crash mid-loop has the same result.
+  - Fix: Finish in a transaction that merges into the newer open batch or marks the old one APPLIED when a conflict exists. Add a recovery that resets stale APPLYING batches by updatedAt.
+- **Selling Price report shows price list and quotation data with only costing:view** `apps/api/src/reports/report-defs.ts:267`
+  - Impact: A role with reports:view and costing:view but no price_lists:view or quotations:view gets every active list price and the last quoted unit price per costing, including through /excel and /pdf.
+  - Fix: Set needs: ['costing:view','price_lists:view','quotations:view'], or blank those columns per actor.
+- **Selling Price report exposes quotation and price list data without those permissions** `apps/api/src/reports/report-defs.ts:267`
+  - Impact: A custom role with reports:view and costing:view but no quotations:view or price_lists:view can read last quoted prices and active list prices.
+  - Fix: Add 'price_lists:view' and 'quotations:view' to needs, or blank those columns for users who lack the permission.
+- **Selling Price report compares a whole-batch list price with per-unit prices, and price lists have no quantity** `apps/api/src/reports/report-defs.ts:289`
+  - Impact: Costing quantity 10, list effective ex-GST 10000: the report shows per unit 1180, list price 10000, quoted unit price 1000 in the same row. A printed price list shows 10000 for a product that sells at 1000 each.
+  - Fix: Show the per-unit list price in the report (same division as quotations). Print a per-unit price or the costing quantity on price list outputs.
+- **Seeded Accountant cannot record a purchase; purchase_rates:edit gates nothing** `apps/api/src/seed/seed.ts:14`
+  - Impact: The spec table gives Accountant 'Edit' on purchase rates, but POST /purchase-rates returns 403. The only way to enter a purchase is an Excel import, and a mistaken entry cannot be removed.
+  - Fix: Add create, and decide on delete, in the seed with a re-seed path like MODULES_ADDED_LATER. Alternatively map the purchase entry routes to edit.
+- **Seeded Staff can create a costing but can never edit or submit it** `apps/api/src/seed/seed.ts:23`
+  - Impact: A Staff user saves a draft. They cannot then correct a typo, add the product photo or send it for approval, so the costing stays in DRAFT until someone with costing:edit acts. The spec's 'Create' for Staff is usable only as create-once.
+  - Fix: Decide the rule and implement it. Either allow the preparer to edit and submit their own DRAFT or REJECTED costing with costing:create, using a service check, or grant Staff costing:edit in the seed and migrate existing roles.
+- **Re-running the seed undoes admin customisation** `apps/api/src/seed/seed.ts:65`
+  - Impact: An admin removes customer_groups:view from Staff (the margin %), or empties a role, or deletes unit BOX. Running the documented upgrade seed restores the permission or the full default grants and brings back BOX.
+  - Fix: Record applied seed steps in a table, so each new-module grant runs once per role. Key role grants on role creation rather than on count === 0. Skip units whose symbol exists as a soft-deleted `~deleted~` row.
+- **Changing the number reset rule can block document creation permanently** `apps/api/src/settings/numbering.service.ts:27`
+  - Impact: With 200 or more costings this year and format COST-{YYYY}-{SEQ:4}, an admin changes reset from YEARLY to FINANCIAL_YEAR. The key becomes a new counter costing:FY2026, COST-2026-0001 to 0200 are all taken, and every new costing fails until the format or rule is changed back. Quotations and price lists behave the same way.
+  - Fix: When the loop runs out, jump the counter past the highest taken number and commit it, or seed the new counter from the highest existing number when the settings change.
+- **Changing the number reset rule can permanently block document creation once the period already has over 200 documents** `apps/api/src/settings/numbering.service.ts:27`
+  - Impact: Default format QTN-{YYYY}-{SEQ:4} with 500 quotations this year; the admin changes reset from YEARLY to NEVER. The new counter hits taken numbers 1 to 200 and throws 'Could not find a free document number', the rollback restores the counter, and every create fails the same way. Format Q-{SEQ:4} with YEARLY reset hits the same wall on 1 January after a year with over 200 documents. It applies to costings, quotations and price lists alike.
+  - Fix: When a number is taken, jump the counter past the highest used value for that formatted pattern and commit it outside the rollback, or seed a new counter from the old one. Reject a format with no year token combined with a periodic reset.
+- **The server accepts inactive masters on new documents, and some soft-deleted references** `apps/api/src/templates/templates.service.ts:45`
+  - Impact: A direct API call, a stale dropdown, or a template containing a now-inactive item creates new costings priced from a deactivated item, and new purchases on it. Labour can point at a deleted unit whose symbol is 'KG~deleted~…'. An unknown templateId or costingId gives a raw FK error and HTTP 500.
+  - Fix: Reject inactive or deleted masters unless the same id is already on the existing document. Add validate to labour. Check templateId and MANUAL costingId and return 400.
+- **Moving an item to another category makes every live costing using it unrecalculable** `apps/api/src/templates/templates.service.ts:69`
+  - Impact: An admin recategorises an item. Every draft using it now fails Refresh rates with 400, and every later batch on those costings (other items, company expense, rules) records FAILED, leaving the batch PARTIAL forever. Those costings keep stale prices until someone edits the tree by hand. Save-as-template fails the same way.
+  - Fix: Skip the hierarchy check for rows already stored on the costing during recalculation, or refuse category/group changes while the item is used by live costings or templates.
+- **No delegation boundary: limited user-admin permissions can be escalated to full Admin** `apps/api/src/users/users.service.ts:55`
+  - Impact: A manager with only `users:create` calls POST /users with roleIds=[Admin role id] and a chosen password, and now holds a full Admin login. A holder of `roles:edit` adds `users:manage_settings` to their own role. A holder of `users:manage_settings` calls PUT /users/<self>/permissions with ALLOW on everything. In the seed only Admin has these permissions, so reach is limited today. It becomes directly reachable when the planned Manager role receives any user or role permission.
+  - Fix: Require users:manage_settings for roleIds in create(). In setRoles, setOverrides and setPermissions, reject non-super-admin actors granting a permission they do not hold, and reject changes to their own roles and overrides.
+- **users:edit can change a super admin's sign-in email, bypassing the protection on status and password** `apps/api/src/users/users.service.ts:69`
+  - Impact: An Admin-role user sends PATCH /users/<superAdminId> {"email":"attacker@x.com"}. The super admin can no longer sign in with their email, and every reset request for the old address silently does nothing. The attacker can then call forgot-password for the new address. Today the token only goes to the server log, but as soon as mail delivery is added this becomes a full takeover of the super admin account.
+  - Fix: In update(), load the target and throw ForbiddenException when target.isSuperAdmin && !actor.isSuperAdmin. Revoke the target's sessions when the email changes.
+- **users:view exposes the audit trail without audit_logs:view** `apps/api/src/users/users.service.ts:136`
+  - Impact: A user with users:view and an explicit DENY on audit_logs:view walks /users, then each user's /activity, and reads nearly the whole audit log, including IP addresses and rate and price changes.
+  - Fix: Keep the route, but return only action, entity and timestamp unless the actor has audit_logs:view. Omit ip and metadata in that case.
+- **Quick add and all web logic have no automated test, and the web app has no test runner** `apps/web/package.json:5`
+  - Impact: The owner-requested quick add has no verification of any kind on record. A mismatched `master` key in lib/masters.tsx silently removes the '+ Add new' row (MASTER_CONFIGS[addNew.master] is undefined, so cfg is undefined and the row is hidden) and nothing would flag it. The keys are a mix of 'item-groups' and 'customerGroups' styles.
+  - Fix: Add a light runner (vitest) to apps/web with unit tests for suggestCode and combobox-filter, plus a test that every remote.master and addNew.master resolves in MASTER_CONFIGS. Add a browser smoke check for quick add.
+- **shadcn/ui and TanStack Table are not used, and packages/ui is empty** `apps/web/package.json:17`
+  - Impact: The stack deviates from the owner's stated choice: no accessible component library and no shared UI package. The planned DataTable is known, but the shadcn/ui and packages/ui gaps are not on the not-built list.
+  - Fix: Have the owner either accept the custom components in writing or adopt shadcn/ui. Then remove the unused dependency and the empty package, or start using them.
+- **Costing print preview and PDF omit the Extra amount, so printed totals do not add up** `apps/web/src/app/(app)/costings/[id]/print/page.tsx:32`
+  - Impact: Set Extra % to 10 on a costing. The printed sheet shows Total incl. GST + Markup that does not equal the printed Selling price, with no line explaining the difference.
+  - Fix: Add extraPercent and extraAmount (and companyExpenseCost) to the print summary in print.service.ts, the PDF summary at line 146, and this page.
+- **Sidebar entries that differ only by query string change the highlight but not the page, or show a stale filter** `apps/web/src/app/(app)/costings/page.tsx:22`
+  - Impact: After opening 'Costing Approval' and clicking 'All Costings', the sidebar highlights All Costings but the list stays filtered to PENDING_APPROVAL, so other costings look missing. Going the other way, clicking 'Costing Approval' from /costings shows all costings. On /purchase-rates, clicking 'Rate History' highlights that entry while the Rate Summary tab stays open.
+  - Fix: Derive the initial value from the param and sync on change, with `useEffect(() => setStatus(params.get('status') ?? ''), [params])` and the same for the tab. Or key the inner component by the search string.
+- **Sidebar links that differ only by query string do nothing when already on that page** `apps/web/src/app/(app)/costings/page.tsx:22`
+  - Impact: On All Costings, clicking 'Costing Approval' highlights that link but still lists everything. Going the other way, 'All Costings' stays filtered to pending. Clicking 'Rate History' from Purchase Rates leaves the Summary tab showing.
+  - Fix: Sync state from the search params in an effect, or derive the filter or tab directly from the URL.
+- **Search boxes fire one API request per keystroke, none debounced or cancelled** `apps/web/src/app/(app)/costings/page.tsx:45`
+  - Impact: Typing a 10-letter product name sends 10 requests. Each costs 8 auth queries, the list query, a count, relation loads and mainImages. In CostingPicker each request returns 200 rows with 200 HMAC-signed image URLs. These also consume the 120 per minute throttle budget described below.
+  - Fix: Extract useDebounced from costing-editor.tsx into lib/, apply it to these 8 inputs at about 300 ms, and pass the React Query `signal` through api().
+- **mustChangePassword is enforced only by a one-time redirect at login** `apps/web/src/app/(app)/layout.tsx:157`
+  - Impact: The seeded admin (seed.ts:88) or a user with an admin-issued temporary password can click any sidebar link straight after login, or reload, and work indefinitely with that password.
+  - Fix: Redirect to /profile in the (app) layout while me.mustChangePassword is true, and refuse non-auth API routes server-side while the flag is set.
+- **Print and review screens add money with JavaScript floats in the browser** `apps/web/src/app/(app)/quotations/[id]/print/page.tsx:28`
+  - Impact: This breaks the owner's rules 'backend is the source of truth' and 'never JS floating point for money'. These figures appear on customer-facing and approval screens and are not values the server calculated. The server already does this sum in Decimal for the share link (quotations.service.ts:355).
+  - Fix: Return these totals from the API: group total in the print model, discount in the quotation response, selling delta in the recalculation preview. Have the web pages only format them.
+- **The same quotation prints differently from its share link: per-line discount differs and the GST breakdown is dropped** `apps/web/src/app/(app)/quotations/[id]/print/page.tsx:30`
+  - Impact: For a quotation with a header discount, the customer's link and the internally printed copy show different Discount values on each line. Only the link shows 'GST n% on x = y'.
+  - Fix: Have one server-built document model feed both the print and public pages, as `publicDocument` already does at quotations.service.ts:345-356, and render it unchanged.
+- **Sidebar #anchor entries do not scroll on the first visit because the target renders only after data loads** `apps/web/src/app/(app)/reports/page.tsx:18`
+  - Impact: The six Reports sidebar entries (layout.tsx:49-54), 'Statistics', 'Recent Activity' and 'Costing Settings' all land at the top of the page on first click when the query is not cached. 'Labour Reports' and 'Quotation Reports' look identical, and the user has to click again to reach the section.
+  - Fix: Add a small `useScrollToHash(ready)` hook that calls `document.getElementById(location.hash.slice(1))?.scrollIntoView()` once the data has loaded, and use it on those three pages.
+- **Palette is not exact: darker status shades and non-palette slates are used as text, contrary to the docs** `apps/web/src/app/(app)/settings/page.tsx:20`
+  - Impact: The owner asked for an exact palette. Success text renders #15803D, not #16A34A, and danger is #B91C1C in some places and #DC2626 in others. Secondary text is #475569 in 49 places. Decision for the owner: #16A34A on white is only 3.30:1 and #F59E0B on white 2.15:1, so the exact codes fail AA for small text. The dark text shades may be wanted, but that should be an agreed rule limited to tinted badges.
+  - Fix: Define semantic text tokens in globals.css. Use the owner codes for plain status text and slate-500 for secondary text, or record an owner-approved exception for the dark shades on tints.
+- **Saving one settings section overwrites unsaved drafts in every other section** `apps/web/src/app/(app)/settings/page.tsx:44`
+  - Impact: Edit Defaults (GST % and terms), then change and save Printing first: the Defaults edits disappear without warning.
+  - Fix: Only reset the section that was saved, or keep per-section dirty flags and skip resetting dirty sections.
+- **Screens tell admins that customer-group limits and margins already work** `apps/web/src/app/(app)/users/[id]/page.tsx:85`
+  - Impact: An administrator ticks 'Dealer' for a user and believes that user is limited, while the user still sees everything. A margin set on a group changes no price. This is sensitive because restricting access is the purpose of the feature.
+  - Fix: Until the later part ships, add a visible note on these screens ('recorded now, applied in a later release'), or hide the controls.
+- **Palette is not exact: success, warning, danger, info and secondary text use different Tailwind v4 colours** `apps/web/src/app/globals.css:7`
+  - Impact: Every danger button, success, warning and info accent, and all secondary and body text render in colours other than the specified hex. For example, a danger button is #E7000B rather than #DC2626. The plan's verification checked only primary, sidebar and background, so it would not catch this.
+  - Fix: Override the tokens in @theme: --color-green-600:#16a34a, --color-amber-500:#f59e0b, --color-red-600:#dc2626, --color-cyan-600:#0891b2, --color-slate-500:#64748b, --color-slate-900:#0f172a. Then correct docs/architecture.md:205.
+- **The most expensive GETs re-run every time the browser tab regains focus** `apps/web/src/app/providers.tsx:6`
+  - Impact: An admin reviewing a batch of 500 costings who alt-tabs to a spreadsheet and back triggers another 15,000 or so queries once 15 s have passed. Doing this repeatedly stacks concurrent previews. Reports re-run their full aggregation the same way, hitting the event-loop block described above.
+  - Fix: Set `refetchOnWindowFocus: false` and a long staleTime on the preview and report queries, or globally with opt-in for lists that need it.
+- **Sticky summary panels and anchor offsets are smaller than the 35px sticky header, so content hides behind it** `apps/web/src/components/costing-editor.tsx:253`
+  - Impact: While scrolling a long costing or quotation, the top 22.4px of the summary card sits under the header, covering its padding and most of the 'Costing summary' title and status badge row. When an anchor does scroll, the section starts 22.4px under the header. On /reports the 18px group heading is hidden completely.
+  - Fix: Use `lg:top-13` (41.6px) on both panels and `scroll-mt-13` on all anchors, or define the header height as a token and use it in both places.
+- **The costing summary shows an internal id for group wastage and omits GST % and Markup %** `apps/web/src/components/costing-editor.tsx:268`
+  - Impact: A user sees "Group wastage g0: 5%" instead of "Metal wastage 5%". A group that inherits overall or category wastage shows nothing at all. GST % and Markup % are not on the final panel as the spec lists them.
+  - Fix: Pass group names to `SummaryPanel`, show the effective wastage % per group, and add GST % and Markup % rows from the form values.
+- **The costing editor re-renders the whole form tree on every keystroke** `apps/web/src/components/costing-editor.tsx:315`
+  - Impact: Render work per keystroke grows as rows x options per row: 50 material rows on a category with 500 items is about 25,000 option objects built per character typed, before Combobox lookups and re-render. This shows up as input lag on large costings.
+  - Fix: Watch `values` in a small child that owns only the preview query, and memoise MaterialRow and LabourRow with useMemo for their options. Use `gcTime: 0` for preview queries.
+- **Enter in the costing picker search submits the surrounding document form** `apps/web/src/components/costing-picker.tsx:27`
+  - Impact: On New Price List with a name entered, typing a search and pressing Enter creates the price list immediately and redirects (line 76) before any product is added. On an existing draft it saves a half-edited list. The 'Reason' and 'Template name' inputs in costing-editor.tsx:412 and 422 behave the same way.
+  - Fix: preventDefault on Enter in these nested inputs, or render the pickers outside the form.
+- **Optional dropdowns cannot be cleared once a value is picked** `apps/web/src/components/master-form.tsx:98`
+  - Impact: The hints say 'Leave blank for a reusable rule' (conversion item) and 'Leave method and value blank to use the expense master defaults'. After one mis-pick the user cannot return to blank in the form: labour type, item default supplier, quotation's 'Existing customer (optional)', expense method override, template expense scope. The expense row must be deleted and re-added; a master field cannot be fixed at all.
+  - Fix: Pass `clearable` from FieldInput and Select for optional fields (add a `required` flag to FieldDef), and restore the 'Whole product' option at template-editor.tsx:181.
+- **Item form's duplicate and default-supplier errors are invisible, so Save appears to do nothing** `apps/web/src/components/master-form.tsx:118`
+  - Impact: Add the same supplier twice, tick two default suppliers, or add a duplicate unit conversion, then click Save: nothing happens, with no message and no request.
+  - Fix: Read `errors[def.name]?.root?.message ?? errors[def.name]?.message`, and add a generic 'Some fields need attention' line to MasterForm.
+- **No unsaved-changes protection on any editor, and a stray backdrop click closes the master drawer** `apps/web/src/components/master-form.tsx:188`
+  - Impact: A long Item form with conversions and supplier rows is lost by one mouse press outside the drawer. A costing with dozens of material rows is lost by clicking any sidebar link, with no prompt.
+  - Fix: Track formState.isDirty and confirm before closing or leaving (backdrop, Cancel, Back, beforeunload, and sidebar links via a shared guard).
+- **Quotation action buttons do not match API permissions** `apps/web/src/components/quotation-editor.tsx:210`
+  - Impact: An approver role without quotations:edit sees Approve and Reject and gets 403 'Missing permission: quotations:edit'. A view-only user sees Customer declined, Mark converted and Revise, and each click returns 403.
+  - Fix: Require can('quotations:edit') on all these buttons, plus quotations:approve for approve, reject and locked revise.
+- **Deactivated masters show as blank 'Select…' on saved and approved documents** `apps/web/src/components/template-editor.tsx:26`
+  - Impact: Deactivate a discontinued item, labour type or unit. Every costing using it, including approved ones, shows 'Select…' in those cells with an empty Unit dropdown, while the PDF still shows the name. Template and quotation editors behave the same way.
+  - Fix: Return resolved names and units with the document payload (or the stored copies), or add an option query that also includes the ids already on the document.
+- **Quick add is missing from unit dropdowns and the purchase entry form** `apps/web/src/components/template-editor.tsx:85`
+  - Impact: A user building a template who needs a new unit, or entering a purchase from a new supplier, must leave the screen and open the master page. Only the master form's own unit field offers quick add.
+  - Fix: Pass addNew={{ master: 'units' }} on the unit Selects, and add master: 'items' and master: 'suppliers' to the two purchase rate remotes.
+- **Template editor loses edits on window focus after any save** `apps/web/src/components/template-editor.tsx:219`
+  - Impact: Save (v1 to v2), keep editing, alt-tab away and back: the refetch returns v2, the key changes and every edit made since the save vanishes. Until that happens the 'Version N' badge (line 270) shows the old number.
+  - Fix: Invalidate ['template', id] on save so the remount happens immediately after the save, and do not remount while the form is dirty.
+- **Tab from an open Combobox loses the place in the form, and '+ Add new' cannot be reached by keyboard** `apps/web/src/components/ui/combobox.tsx:102`
+  - Impact: A user entering costing rows with the keyboard (type, Enter or Tab to move on) leaves the row when they Tab out of an open dropdown. Focus falls to the end of the document instead of the Qty input. Typing 'Pipe' when 'Pipe MAX' exists offers no keyboard way to add 'Pipe', because quick add then works only with a mouse. The docs and the component comment both claim Tab works as expected.
+  - Fix: Use `close()` for Tab, which refocuses the trigger synchronously and lets the default Tab move to the next field. Include the add row as a final index in the arrow-key navigation.
+- **Tab in an open combobox loses the place in the form** `apps/web/src/components/ui/combobox.tsx:102`
+  - Impact: Keyboard entry of costing rows (open Item, type, Tab to Qty) sends focus out of the form to the browser chrome or the top of the page. The '+ Add new' row cannot be reached by keyboard while there are matches. The component's doc comment promises that Tab works as expected.
+  - Fix: On Tab: preventDefault, close, refocus the trigger, then move focus to the next focusable element after the trigger (or refocus the trigger synchronously before the default action). Optionally commit the highlighted option.
+- **Refresh is deduplicated per tab only, so a second tab can be kicked to login with a valid session** `apps/web/src/lib/api.ts:11`
+  - Impact: Browser session restore or opening two links at once sends two refreshes with the same cookie. The tab that loses the race gets 401 and lands on /login although its cookie jar already holds the new valid token. In a tab already running, the loser shows 'Session expired' errors instead.
+  - Fix: Serialise refresh across tabs with navigator.locks, or retry once after a short delay when a refresh returns 401, since the cookie may have rotated by then.
+- **An expired session never returns the user to login** `apps/web/src/lib/api.ts:30`
+  - Impact: After the refresh token expires, the session is revoked from the profile page of another device, or the user is deactivated, the app shell stays on screen. Every list shows 'Unauthorized' and every save fails until the user reloads or signs out by hand.
+  - Fix: When a refresh fails, set `me` to null through a registered callback (keeping any draft), so the layout redirects to /login.
+- **React Query cache is not cleared on logout, so the next user in the tab sees the previous user's data** `apps/web/src/lib/auth-store.ts:32`
+  - Impact: User A signs out and User B, with fewer permissions, signs in in the same tab within gcTime. B immediately sees A's cached lists, costs and dashboard. If B's refetch returns 403, React Query keeps the old data on screen beside the error.
+  - Fix: Call `queryClient.clear()` on logout and login (for example, expose the client or do a full page navigation on logout).
+- **Caddy's 12 MB body cap blocks multi-image uploads the app advertises as allowed** `deploy/Caddyfile:17`
+  - Impact: Choosing two 7 MB photos passes the client check and is within API limits, but the 14 MB request exceeds the proxy cap and the upload fails. The user sees a generic error because the proxy response carries no API message (lib/api.ts falls back to statusText). It happens only behind the proxy, so a direct-to-API test would pass.
+  - Fix: Upload files one per request from image-manager, or raise max_size to at least 10 x 8 MB plus overhead (about 85MB).
+- **Documented upload limit cannot be reached behind the documented proxy** `deploy/Caddyfile:17`
+  - Impact: In production, selecting two 8 MB photos (16 MB) exceeds the proxy limit, and the upload fails at the proxy instead of with the application's validation message. The documented batch of 10 x 8 MB (80 MB) can never succeed.
+  - Fix: Set max_size to at least 85MB for the upload routes, or lower MAX_FILES_PER_REQUEST and the doc to what the proxy allows.
+- **Backup dumps are written with the default umask, and the production env file is group-writable and world-readable** `deploy/backup.sh:10`
+  - Impact: Any local OS account can read full database dumps (password hashes, costings, prices, audit logs) and .env.production, which holds JWT_SECRET and POSTGRES_PASSWORD. JWT_SECRET allows forging access tokens.
+  - Fix: Add `umask 077` at the top of backup.sh, add `chmod 600 .env.production` to the install steps, and chmod the existing file.
+- **Failed backups leave files that count toward retention, and the uploads archive has no atomic rename** `deploy/backup.sh:20`
+  - Impact: With KEEP=14, 13 failed nights followed by one success leaves 13 partials and one dump, and retention deletes every older good dump. A tar interrupted by a full disk leaves a truncated `uploads-*.tar.gz` that looks valid, and restore.sh runs `rm -rf /data/*` (line 18) before discovering it is corrupt.
+  - Fix: Add a trap that removes partials, restrict retention to `db-*.dump` and `uploads-*.tar.gz`, write tar to `.partial` and rename it after `tar tzf` succeeds, and validate the dump with `pg_restore --list` before renaming.
+- **restore.sh validates inputs too late and accepts partial dumps** `deploy/restore.sh:16`
+  - Impact: A mistyped uploads path replaces the database, then exits at line 16 with api and web stopped and old images still in place. A truncated .partial dump still passes the check; its schema is dropped by --clean and data loading then fails. The previous data is gone because no pre-restore copy is taken.
+  - Fix: Move all file checks before the prompt, reject `.partial`, run `pg_restore --list` and `tar tzf` first, and take a safety dump before replacing anything.
+- **Smoke admin cannot be deleted as the script and report instruct; it stays a super admin unless deactivated** `deploy/smoke-admin.sh:3`
+  - Impact: Following the instruction is impossible. smoke@example.com, smk.staff and smk.lock remain, and SMK test data cannot be removed if this database goes live (docs/smoke-test.md:45-48). Whether the account is currently active could not be checked from code. With the leftover credentials file this is a live super-admin path until someone deactivates it.
+  - Fix: Correct the instruction to 'deactivate' (PATCH /users/:id/status, which also revokes sessions, users.service.ts:74-82), add it to a go-live checklist in deployment.md, and go live on a fresh database volume.
+- **The documented POSTGRES_PASSWORD generator produces passwords that can break the database URL** `docker-compose.prod.yml:31`
+  - Impact: About 4 in 10 fresh installs that follow the guide are expected to get a password with `/`, in which case the `migrate` service should fail on the malformed URL. docs/deployment.md:102 then points the operator at 'wrong POSTGRES_PASSWORD'. An operator working around this under pressure may choose a weak password.
+  - Fix: Document `openssl rand -hex 24` in docs/deployment.md and .env.production.example.
+- **The documented database password format can produce an invalid DATABASE_URL** `docker-compose.prod.yml:31`
+  - Impact: On about 4 in 10 fresh installs following the guide, the URL cannot be parsed, so migrate and the API would fail to connect. The troubleshooting table points to a wrong password.
+  - Fix: Change the instruction to `openssl rand -hex 24`, or percent-encode the password when building the URL.
+- **Docs still say nothing has ever run on a real database or in Docker, which contradicts smoke-test.md** `docs/acceptance.md:3`
+  - Impact: Anyone reading the acceptance review cannot tell what has been proven. It understates live verification, and it lists a 22-row status without showing that per-group prices, the publish tick box, cost and price list reports, Manager/User/Designer roles, column access and group scoping are outstanding.
+  - Fix: Rewrite acceptance.md, deployment.md:5 and architecture.md:165,181 to state what the smoke test proved and what remains unproven (backup and restore, real domain and HTTPS, filled Excel import, UI v2). Add a section for the owner's later requirements with built and not-built status.
+- **Costing create, successful update and create-from-template have no test, and the acceptance review describes the template flow wrongly** `docs/acceptance.md:15`
+  - Impact: The main path by which every costing enters the system, and the 'Costing from template' acceptance criterion, could break (wrong revision, wrong version, archived template accepted, GST or markup defaults dropped) with the suite green.
+  - Fix: Add service tests for create (number, templateVersion, first revision, audit), update (new version, frozen fields) and fromTemplate (inactive rejected, defaults copied). Correct acceptance row 9.
+- **The operator upgrade guide omits the seed, so new permissions are missing even for the super admin** `docs/deployment.md:49`
+  - Impact: An installation upgraded by following the deployment guide has no customer_groups:* rows. Everyone, including the super admin, gets 403 on /customer-groups and the sidebar item is hidden, with no error at upgrade.
+  - Fix: Upsert the permission catalogue at API startup or as a post-migrate compose step, and add the step to deployment.md section 3.
+- **smoke-test.md records verification of a UI that no longer exists, and UI v2 has no recorded check** `docs/smoke-test.md:57`
+  - Impact: The re-test section reads as if the new UI has been verified. In fact the flat palette, compact layout, Combobox, SelectBox and quick add have no recorded browser check.
+  - Fix: Mark that paragraph as applying to the superseded first version and add a UI v2 re-test entry, or state plainly that UI v2 has not been smoke tested.
+- **Fixed-rate labour is not supported; every labour row is quantity × rate** `packages/costing-engine/src/costing.ts:275`
+  - Impact: A lump-sum job must be entered as qty 1 by convention. Any quantity change multiplies it, because the system cannot distinguish a fixed charge from a per-unit charge.
+  - Fix: Add a labour calculation method (FIXED or QUANTITY) to the master, template and costing rows, and handle it in the engine with tests.
+- **The admin's costing base choice does not change the price list selling price** `packages/costing-engine/src/pricing.ts:103`
+  - Impact: Computed for basic 1000, total 1180, GST 18%. 20% profit gives 1200 ex-GST for both BASIC_COST and TOTAL_COST, and 1416 for both when INCLUSIVE. Fixed 100 gives 1100 for both when EXCLUSIVE and 1280 for both when INCLUSIVE. The spec (Phase 8: 'Allow admin to select the costing base used for profit calculations') is not met: only the costBaseAmount label changes. Spec Method B (Selling Price = Costing Base + Fixed Profit) also fails for BASIC_COST + INCLUSIVE, where the expected price is (1000+100)×1.18 = 1298 and the engine gives 1280.
+  - Fix: Apply the profit to the selected base in that base's own terms, then convert the result to the quoted basis: 20% of 1180 and 20% of 1000 only coincide if GST is treated as scaling. Confirm the intended behaviour with the owner, because a percentage profit needs a distinct definition per base for the option to have any effect.
+- **Under INCLUSIVE treatment, reported profit contains GST and the figures shown do not add up** `packages/costing-engine/src/pricing.ts:132`
+  - Impact: Computed. For the same 1200 + 18% deal, EXCLUSIVE reports profit 200 and INCLUSIVE reports profit 236, of which 36 is GST owed to the government. With BASIC_COST + INCLUSIVE the sheet shows cost base 1000, profit 236, GST 216, incl. 1416, but 1000 + 236 + 216 = 1452. With TOTAL_COST + EXCLUSIVE it shows cost base 1180, profit 200, excl. 1200. Fixed profit 100 + INCLUSIVE reports profit 100, but the ex-GST price is 1084.75, so only 84.75 is earned.
+  - Fix: Compute profitAmount and effectiveProfit ex-GST (effectiveExGst - cost ex-GST), and return costBaseAmount in the same basis as the profit.
+- **The printed price list GST column is GST on the list price, not the discounted price, so rows do not add up** `packages/costing-engine/src/pricing.ts:144`
+  - Impact: Computed. List 1200, 10% discount: the row prints list 1200, discount 120, GST 216, price incl. GST 1274.40. But 1200 - 120 + 216 = 1296, and the correct GST is 194.40. The customer-facing document overstates GST by 21.60. The same applies to a list raised by minPrice: list 1000, min 1200, GST shows 180 where the effective GST is 216.
+  - Fix: Return effectiveGst = effectiveInclGst - effectiveExGst, store it, and print it on rows that show the effective price.
+- **Item, min/max/avg and supplier rates are cut to 4 dp while purchases keep 6 dp, which distorts costs for small base units** `packages/costing-engine/src/rates.ts:25`
+  - Impact: Item with base unit gram, bought at 12.345 per kg: baseRate 0.012345, current rate 0.0123. A costing using 100 kg gets 1,230.00 instead of 1,234.50 (node check). A rate below 0.00005 per base unit becomes 0.0000 and the material costs nothing. Purchases at 1,000 per box of 7 come back as 999.9997 per box. Every repeat purchase with more than 4 dp also falsely reports a supplier rate change and raises a recalculation batch.
+  - Fix: Widen item and supplier rate columns to scale 6 and call computeRateStats with places 6, or reject base units that cannot represent the rate.
+- **Item rates are rounded to 4 decimals per base unit, which moves the cost of items with small base units** `packages/costing-engine/src/rates.ts:32`
+  - Impact: Computed. An item with base unit gram bought at 87.65 per KG has baseRate 0.08765, and the item rate becomes 0.0877. A costing row in KG gets 0.0877 × 1000 = 87.70, not the 87.65 paid, so 1000 KG costs 87,700 instead of 87,650. Also, a row in grams computes with the unrounded row rate but stores it at 4 decimals: 20940 g × 0.08765 gives total 1835.39, while the sheet prints rate 0.0877, and 20940 × 0.0877 = 1836.44.
+  - Fix: Keep item rates at the same scale as baseRate or finer: set places to 6 and widen the rate columns to at least Decimal(18, 6).
+- **The 'approved figures never move' test cannot fail in a meaningful way, yet is cited as evidence** `packages/costing-engine/src/workflow.spec.ts:68`
+  - Impact: A reader counts this as freeze coverage. It would still pass if every approved costing were overwritten by the recalculation path.
+  - Fix: Delete or rename it to 'deterministic', and drop workflow.spec from acceptance row 14 and architecture.md:162.
+- **Inputs with more decimals than the column are calculated unrounded but stored rounded, so a later recalculation moves money with no master change** `packages/validators/src/common.ts:3`
+  - Impact: A custom labour rate of 10.12345 x 1000 saves total 10,123.45 with rate 10.1235; the next Refresh or batch gives 10,123.50 and the selling price changes although nothing changed. A manual quotation price of 1.23456 x 1000 has taxable 1,234.56 but the customer link's GST breakdown shows taxable 1,234.60. Material quantity 0.00001 passes positiveDecimal, is stored as 0, and then toPayload fails `Must be greater than 0` at line 411, so that costing's recalculation fails with a 400 every time.
+  - Fix: Add per-field scale limits in the validators (4 dp for quantity and rate, matching the columns), or round inputs to column scale before calculating. Use stored gstBreakdown figures in publicView.
+- **Decimal places can be set up to 6, but stored money columns keep 2, so saved figures differ from the engine and break the rounding rule** `packages/validators/src/costings.ts:96`
+  - Impact: Computed for decimals 3, rounding DOWN, material 100.5555, GST 18%. The engine and preview give basic 100.555, GST 18.099, total 118.654. PostgreSQL's numeric(18,2) rounds on insert, so the stored values are 100.56, 18.10 and 118.65. Basic was rounded up although the rule says DOWN, and stored 100.56 + 18.10 = 118.66 does not equal stored 118.65. Saved values no longer match the preview.
+  - Fix: Limit decimals to the column scale (max 2), or widen the money columns to the maximum scale the validator allows.
+- **The "Number of decimal places" rule accepts up to 6 but stored figures keep only 2** `packages/validators/src/costings.ts:96`
+  - Impact: Set decimals to 3: preview computes 100.123, PostgreSQL stores 100.12, and the screen shows 2 places. Stored line totals no longer match the calculation. `signatureOf` compares stored with fresh figures (costings.service.ts:393-424), so an unchanged live costing would report CHANGED on every recalculation and gain a new version each time.
+  - Fix: Limit `decimals` to 0-2 in the schema and settings screen, or widen the columns by migration and make display follow `rules.decimals`.
+- **Business day, financial year and date-filter boundaries all use UTC, so 00:00-05:30 IST lands on the previous day** `packages/validators/src/settings.ts:30`
+  - Impact: The system is INR/GST with an April financial year. A quotation created at 01:00 IST on 1 April gets the previous financial year's {FY} and counter, and one at 01:00 IST on 1 January gets last year's number. Costing History and Rate Change Impact filtered to 5 Nov omit changes made 00:00-05:30 IST on 5 Nov and include those from early 6 Nov IST. A duplicate made at 02:00 IST is dated yesterday.
+  - Fix: Add a business timezone setting (default Asia/Kolkata) and derive today, financial year, number period and timestamp filter bounds from it. Show report timestamps in that zone.
+- **"Save as template" fails for a costing that used "Duplicate row", and template expenses cannot hold a quantity** `packages/validators/src/templates.ts:65`
+  - Impact: Two rows of the same item with different specifications save as a costing, but the user gets a 400 on Save as template. A quantity-based expense of 4 × 50 = 200 comes back from the template as 1 × 50 = 50.
+  - Fix: Allow repeated items in a template by dropping the rule and the unique index, or merge them explicitly with a clear message. Add `quantity` to `TemplateExpense`.
+- **Missing indexes for the default sort and filter of real queries** `prisma/schema.prisma:467`
+  - Impact: The Purchase Entries tab sorts all live entries on every page view, and every dashboard poll from every open dashboard sorts all live costings and quotations, even for 6 rows. Both get slower as those tables grow.
+  - Fix: Add @@index([purchaseDate]) on PurchaseRate, @@index([deletedAt, updatedAt]) on Costing and Quotation, and @@index([userId, action, createdAt]) on AuditLog.
+- **Quantity-based wastage exists only per material row, not at category, group or overall level** `prisma/schema.prisma:786`
+  - Impact: A user cannot enter "2 KG wastage for the Metal group". A costing with quantity wastage saved as a template loses that wastage silently.
+  - Fix: Add quantity wastage at the higher levels with a defined way to apportion it across rows, or have the owner confirm item-level only. Carry quantity wastage through templates.
+- **CostingMaterial.rate is rounded to 4 decimals while the engine uses the full rate, so unchanged costings report CHANGED** `prisma/schema.prisma:826`
+  - Impact: Any row whose unit conversion yields more than 4 decimals (FT, G, weighted-average rates with conversions) never reports UNCHANGED. Each batch or Refresh rates writes a new version and revision and counts it as applied with zero change, contrary to the comment at line 401. Stored rate × quantity also differs from total: 1000 FT gives 29733.20 against a stored 29733.24.
+  - Fix: Round the resolved rate to the column scale before calculating and storing it, or widen the column, or compare the signature using rounded values only.
+- **changePercent DECIMAL(9,2) overflows and silently aborts the recalculation batch** `prisma/schema.prisma:1306`
+  - Impact: Replace a placeholder rate of 0.01 with a real 1,500. The purchase or edit succeeds, the batch insert fails with a numeric overflow, and only the log shows it. No batch exists and live costings stay on the old rate in every mode.
+  - Fix: Clamp the value to the column range or store null above it, or widen the column. Never let a display figure abort the batch.
+
+### Low
+
+- **change-password has no strict throttle or failure handling on the current password check** `apps/api/src/auth/auth.controller.ts:54`
+  - Impact: Someone holding a stolen 15-minute access token can test about 120 passwords per minute against the victim's current password, bypassing the login lockout, and then change it. Any signed-in user can also repeatedly trigger cost-12 hashing in the API process.
+  - Fix: Add `@Throttle({ default: { limit: 5, ttl: 60_000 } })`. Audit failures as `login_failed` so they count towards the lockout.
+- **Concurrent refresh handling: a double submit logs a tab out, and two parallel requests can both rotate** `apps/api/src/auth/auth.service.ts:84`
+  - Impact: Restoring or reloading two tabs at once can show one tab the login page while the session is still valid. Reloading fixes it. Two parallel uses of one stolen token can both succeed without triggering reuse detection.
+  - Fix: Rotate with `updateMany({ where: { id, revokedAt: null } })` and treat count 0 as a replay. Within the grace window, have the web client retry once after a short delay, or use a BroadcastChannel or Web Lock to share the refresh across tabs.
+- **forgot-password timing differs between known and unknown accounts** `apps/api/src/auth/auth.service.ts:94`
+  - Impact: Response time can distinguish registered email addresses, despite the identical message on line 103, subject to the 5 per minute throttle per IP.
+  - Fix: Respond first and do the token creation and audit write in a detached promise with error logging, for both branches.
+- **Password reset tokens survive later password changes and new requests** `apps/api/src/auth/auth.service.ts:110`
+  - Impact: After an admin resets a compromised account, an earlier reset token remains usable for up to 1 hour. It replaces the new password, and it clears mustChangePassword (line 111).
+  - Fix: In each of these paths, delete or mark used all of the user's unused reset tokens in the same transaction.
+- **Inactive company expense can be charged as an ordinary row through a template or API** `apps/api/src/costings/costings.service.ts:89`
+  - Impact: A template contains 'Admin overhead'. The admin later flags it as company and then deactivates it to stop charging. New costings from that template still carry it as a normal row at the master value, and users can edit the row, despite docs saying a client can neither add nor alter company expenses.
+  - Fix: Strip every row whose master has isCompanyExpense=true, whatever its active state.
+- **Editor shows amounts against the wrong expense rows when a company expense is in the form** `apps/api/src/costings/costings.service.ts:91`
+  - Impact: Form rows are [Rent (company), Packing]. Preview returns e0=Packing, so the Rent row shows Packing's amount and the Packing row shows '—'. On save Rent is silently dropped. Totals are correct, but per-row figures are misleading.
+  - Fix: Have preview return rows keyed by original input index, and hide company expenses from the picker.
+- **Expense value overrides have no permission check, unlike material and labour custom rates** `apps/api/src/costings/costings.service.ts:172`
+  - Impact: A user with costing:create or costing:edit and no manage_rates sets an expense FIXED value of any amount, which changes the basic cost, GST and selling price.
+  - Fix: Require costing:manage_rates when value or method differs from the master, keeping the same exception for values unchanged on the existing row.
+- **Company expenses and rates are read outside the save transaction, so an in-flight costing can miss a change** `apps/api/src/costings/costings.service.ts:344`
+  - Impact: A costing being created while an admin changes a company expense commits with the old amount and is not in the batch. It stays stale until the next change or a manual refresh.
+  - Fix: Read company expenses and rates inside the transaction, with a shared lock on the masters used, or re-check after commit.
+- **Header references are not validated, and templateVersion goes stale** `apps/api/src/costings/costings.service.ts:348`
+  - Impact: A random UUID as unitId or templateId returns a 500 from the FK error instead of 400. A deleted template is accepted. A template edited between load and save records a version the costing was not built from.
+  - Fix: Validate these ids in prepare, map P2003 to 400, and return and accept the template version from from-template.
+- **Self-approval setting checks only the original preparer** `apps/api/src/costings/costings.service.ts:453`
+  - Impact: With allowSelfApproval=false, an approver with edit permission rewrites another person's draft or reopened costing and then approves their own figures, and the check passes.
+  - Fix: Also refuse approval when the last editor (updatedBy of the last figure change) is the approver.
+- **Self-approval rule only compares against preparedById, which edits never change** `apps/api/src/costings/costings.service.ts:453`
+  - Impact: With self-approval disabled, A prepares and approver B rewrites every figure, submits and approves their own numbers, so no second person reviewed them.
+  - Fix: Compare against the last editor as well (updatedBy on the latest content revision), not only the original preparer.
+- **Status transitions are read-then-write with no guard** `apps/api/src/costings/costings.service.ts:459`
+  - Impact: Recalculation reads DRAFT, the user submits, and persist writes DRAFT back, silently undoing the submission. Reject racing approve leaves REJECTED with pricingMode SNAPSHOT and approvedAt set; recalculate then refuses forever and reopen is not allowed from REJECTED, so the costing is stuck.
+  - Fix: Use updateMany with `where: { id, status: expected, version: expected }` in setStatus and persist, and return 409 on count 0.
+- **A reopened costing used by active price lists or open quotations can be soft-deleted** `apps/api/src/costings/costings.service.ts:469`
+  - Impact: Reopen, then delete, a costing that is in an active list. The list PDF still prints its price, and the list's Reprice says 'One or more selected costings do not exist' without naming it.
+  - Fix: Refuse the delete while active price lists or open quotations reference the costing, or at least name the costing in the reprice error.
+- **Save-as-template fails or silently loses data for valid costings** `apps/api/src/costings/costings.service.ts:507`
+  - Impact: A costing with the same item twice in a category (for example two suppliers) cannot be saved as a template. A costing with a QUANTITY_BASED expense of qty 50 or an AFTER_GST override produces a template whose new costings charge qty 1 and the master's timing, with no notice.
+  - Fix: Allow duplicates in the template schema or merge them with a clear message, and add quantity and timing to template expenses or warn on save.
+- **Import opens the whole workbook with only a compressed-size limit** `apps/api/src/data/excel-io.ts:37`
+  - Impact: A user with data_management:import can upload a small highly compressed xlsx that expands to millions of cells in memory on a host already known to be memory-limited. The row-limit message comes too late to help.
+  - Fix: Check entry sizes in the zip before loading, or use the ExcelJS streaming reader and stop after MAX_IMPORT_ROWS.
+- **The costing summary export ignores the stated row cap** `apps/api/src/data/export.service.ts:64`
+  - Impact: A user with costing:export and an unfiltered request loads every costing into memory and into one ExcelJS workbook, with no upper bound as data grows, while other requests wait.
+  - Fix: Stop when all.length reaches MAX_EXPORT_ROWS, and return 400 asking for narrower filters when r.total exceeds it.
+- **Excel labour line formula hardcodes 2 decimals and can disagree with the stored total** `apps/api/src/data/export.service.ts:129`
+  - Impact: With rounding UP or decimals 3, a labour line stored as 10.001 or 10.01 recalculates to 10.00 in Excel, and the 'Check: labour lines add up to' value differs from Total labour cost.
+  - Fix: Write the stored total as a value like materials, or build the formula from c.rules.
+- **Price list import matches costing numbers case-sensitively, unlike the rest of import** `apps/api/src/data/import.service.ts:255`
+  - Impact: A row with 'cost-2026-0001' reports 'Unknown costing number' although that costing exists.
+  - Fix: Query with an insensitive match, or uppercase and normalise before the query.
+- **pnpm audit reachability: only multer is reachable, and only after sign-in with a permission** `apps/api/src/images/images.controller.ts:11`
+  - Impact: An unauthenticated multer DoS is not reachable. A signed-in user with an upload permission could reach it, including an Accountant through purchase-rates import, which has no stricter throttle. The other four packages have no path from request data in production. The zip bomb finding above is the more serious problem on these same routes.
+  - Fix: Add a pnpm override for multer when a patched version is released, because platform-express pins the exact version. Add a @Throttle to the purchase-rates preview and confirm routes, matching data.controller.ts. No action is needed for postcss, deepmerge-ts, uuid or js-yaml beyond normal updates.
+- **An image file is removed from disk even when its database row could not be deleted** `apps/api/src/images/images.service.ts:176`
+  - Impact: Removing an image while Save as template links the same file leaves a linked FileAttachment whose file is gone, so the image returns 404 on documents permanently.
+  - Fix: Remove the stored files only after the database delete has succeeded.
+- **Signed image URLs change every second, so the browser cache never reuses list thumbnails** `apps/api/src/images/url-signer.ts:18`
+  - Impact: Each refetch of the costing list (each search keystroke, each window focus after 15 s) produces new URLs for up to 25 rows, and the browser downloads every thumbnail again.
+  - Fix: Round exp up to a fixed bucket, for example `Math.ceil(now / 1000 / 3600) * 3600 + ttlSeconds`, so URLs stay stable within the hour.
+- **Without Docker, a default configuration makes all users share one IP for throttling and audit** `apps/api/src/main.ts:14`
+  - Impact: Behind nginx with the documented variables, every client's req.ip is the proxy. Ten sign-ins per minute across the whole company trigger the login throttle (auth.controller.ts:27), and the audit log and Active sessions show the proxy address for everyone.
+  - Fix: Add TRUST_PROXY=true to the command or variable list in docs/deployment.md section 7.
+- **API has no graceful shutdown: SIGTERM is ignored by PID 1 and shutdown hooks never run** `apps/api/src/main.ts:32`
+  - Impact: Node as PID 1 with no handler ignores SIGTERM, so each `stop` or `up -d --build` waits the 10 s timeout and then SIGKILLs the API, including during restore.sh:13. In-flight requests such as recalculation or image writes are cut off without draining.
+  - Fix: Call `app.enableShutdownHooks()` before `app.listen`, and add `init: true` to the api service.
+- **Weak or vacuous assertions in the maintenance and auth specs** `apps/api/src/maintenance/maintenance.service.spec.ts:27`
+  - Impact: The titles claim guarantees the tests do not check, including an account-enumeration protection documented at architecture.md:168.
+  - Fix: Spy on bcrypt.compare in the unknown-email test. Compare known and unknown forgotPassword responses with toEqual and assert the stored token is a hash. Remove the Object.keys assertion or assert that only the three delegates' methods were called via a Proxy.
+- **Rates can be changed through the item form with items:edit alone** `apps/api/src/masters/master.controller.ts:25`
+  - Impact: A custom role with items:edit but no manage_rates can move an item's rate and trigger batches or AUTO recalculation with a generated reason. Seeded roles do not expose this: Accountant has both permissions and Staff has neither.
+  - Fix: In MasterService or the items config, refuse changes to rate fields unless the actor has purchase_rates:manage_rates.
+- **Dropdown lists are silently cut at 1000 records with no server search** `apps/api/src/masters/master.service.ts:38`
+  - Impact: With more than 1000 active customers, suppliers or items, later names cannot be found in any dropdown and no message says the list is truncated.
+  - Fix: Report truncation, or add server-side search to the combobox.
+- **Unit master factor edits do not reach live costings (documented as by design)** `apps/api/src/masters/masters.config.ts:64`
+  - Impact: Correcting a wrong factor leaves live costings using generic conversion at the old rate, with no batch or flag, until each is saved. Stored PurchaseRate.baseRate values stay as computed with the old factor. The owner may want to confirm this design choice.
+  - Fix: Emit a change for units whose factor changed, using a usage query on costingMaterial.unitId, if the owner wants this covered.
+- **Rows of soft-deleted items keep blocking supplier and unit deletion** `apps/api/src/masters/masters.config.ts:84`
+  - Impact: Delete the only item using supplier S. Deleting S then fails with 'used by 1 item supplier rate(s)', and no screen can remove that row.
+  - Fix: Add `where: { item: { deletedAt: null } }` to both references.
+- **items:view returns supplier-wise and min/max purchase rates to a role the spec denies purchase rates** `apps/api/src/masters/masters.config.ts:150`
+  - Impact: A Staff user reads each supplier's rate per item from GET /items, even though they have no purchase rates access.
+  - Fix: Strip the suppliers rate and the min/max/avg fields unless the actor has purchase_rates:view, or include this when column-level access is built.
+- **Price list header rules are not updated by reprice or add-items** `apps/api/src/price-lists/price-lists.service.ts:184`
+  - Impact: Rules change from 2 to 3 decimals, then a reprice: the stored header rules still say 2. The record of how prices were computed is wrong, and items in one list can mix rule sets. reprice also does not set updatedBy on the list.
+  - Fix: Update priceList.rules and updatedBy in the same transaction.
+- **Approved costing printouts read names and unit symbols from the masters** `apps/api/src/print/print.service.ts:61`
+  - Impact: Renaming an item or expense after approval changes what an approved costing's printout and detail page show, while figures stay frozen.
+  - Fix: Snapshot display names and unit symbols on approval, or include them in the approved revision and print from it.
+- **Money is added with JS floats in print and quotation Excel output, against the Decimal rule** `apps/api/src/print/print.service.ts:65`
+  - Impact: Visible when rules.decimals is above 2: a group total of 1.005 becomes 1.00 from toFixed instead of 1.01 half-up, so the group total can differ from the engine by 0.01. The binding rule 'never JS floating point for money' is broken regardless.
+  - Fix: Sum with d() from the engine and format the Decimal result.
+- **PDF money totals are calculated with JavaScript floats** `apps/api/src/print/print.service.ts:65`
+  - Impact: This breaks a binding project rule on customer-facing documents. I did not construct an input that prints a wrong figure, because two-decimal inputs rounded to two decimals mostly hide the float error.
+  - Fix: Sum with `d()` from the costing engine, or use totals the engine already returned.
+- **Print group totals and the recalculation delta use floating-point money maths outside the backend calculation path** `apps/api/src/print/print.service.ts:65`
+  - Impact: This breaks the owner's rules on Decimal only and on not duplicating calculation logic. With a rules.decimals setting other than 2, printed group subtotals are rounded differently from the stored line figures. Each screen also has its own copy of the sum to maintain.
+  - Fix: Sum with `d()` Decimal in print.service, using the stored rule decimals. Return a per-row delta string from RecalcService.preview and display that.
+- **Rate impact count opens a second connection while a transaction holds its own** `apps/api/src/purchase-rates/purchase-rates.service.ts:102`
+  - Impact: Every rate transaction needs two connections at once. If concurrent rate saves or imports hold all pool connections, each waits for another until Prisma's pool timeout (P2024) or the transaction timeout, and the saves fail.
+  - Fix: Run measure before the transaction opens, or pass `tx` through to the provider.
+- **Supplier rate comparison uses different scales, raising false rate changes and review flags** `apps/api/src/purchase-rates/purchase-rates.service.ts:123`
+  - Impact: Recording an older-dated purchase, or removing one, with no real rate change creates a batch and flags all open quotations and price lists using the item.
+  - Fix: Round baseRate to 4 places before comparing.
+- **Import lookups ignore case but database uniqueness does not** `apps/api/src/purchase-rates/rates-excel.service.ts:110`
+  - Impact: With items 'mpm' and 'MPM', or units 'M' and 'm', a rate import row for one silently lands on the other, or uses the wrong unit conversion, without an error.
+  - Fix: Add unique indexes on lower(code) and lower(symbol), or normalise codes to upper case on write, or match exact case in imports.
+- **Approval permission alone cannot approve a quotation** `apps/api/src/quotations/quotations.controller.ts:52`
+  - Impact: A user given quotations:view and quotations:approve, for example a reviewer who should not edit, gets 403 'Missing permission: quotations:edit' on approve and reject.
+  - Fix: Give approve and reject their own routes guarded by quotations:approve, or make this route service-checked per action.
+- **MANUAL quotation lines accept any costingId, unchecked** `apps/api/src/quotations/quotations.service.ts:76`
+  - Impact: A quotations:create user with no costing:view attaches a draft costing's id to a manual line. They receive its number and product photo, and the photo appears on the customer link. A non-existent id reaches the foreign key and gives a 500 instead of a 400, because create has no P2003 mapping.
+  - Fix: Set costingId to null on MANUAL lines, or reject it in the validator's superRefine.
+- **Unvalidated list and export filters and loose ids return 500 instead of 400** `apps/api/src/quotations/quotations.service.ts:76`
+  - Impact: GET /quotations?status=FOO, ?from=abc, or a MANUAL line with a random costingId returns 500. The Reports module already validates such input (parseFilters), but these endpoints do not, against 'validate all inputs on the backend'.
+  - Fix: Validate these query params with Zod, verify or drop costingId on MANUAL lines, and cap decimal magnitude to the column precision.
+- **Quotation and price list numbers use the current date, not the document date as costings do** `apps/api/src/quotations/quotations.service.ts:144`
+  - Impact: A quotation dated 31 March and entered on 1 April gets next financial year's number and counter, so its {FY} does not match its own date.
+  - Fix: Pass the document date (quotationDate / effectiveDate) to numbering.next.
+- **Send and submit accept a quotation whose validity date has already passed** `apps/api/src/quotations/quotations.service.ts:255`
+  - Impact: A draft dated 60 days ago with 30 days validity can be marked Sent. The next sweep (within 30 s) flips it to EXPIRED and it cannot be shared. An APPROVED quotation never expires however old it is, and can still be converted or sent.
+  - Fix: On send and submit, refuse when validUntil < today with a message to change the date. Decide and implement expiry for APPROVED.
+- **Public quotation response includes internal company fields** `apps/api/src/quotations/quotations.service.ts:347`
+  - Impact: Anyone holding a customer link receives the internal user id of the person who last edited company settings, and the logo file id.
+  - Fix: Return an explicit list of letterhead fields from publicView.
+- **The public quotation response includes internal company settings fields** `apps/api/src/quotations/quotations.service.ts:347`
+  - Impact: Anyone holding a share link can read the UUID of the admin who last edited company settings and when. It gives no direct access, but it is internal data on an endpoint documented as having none.
+  - Fix: Map to an explicit list in publicView: name, address, phone, email, gstin, state, website, currencyCode, currencySymbol, footerNote, logoUrl.
+- **Public quotation view returns internal company row fields** `apps/api/src/quotations/quotations.service.ts:347`
+  - Impact: Anyone holding a share link receives an internal user id and file id, though the method's comment describes a customer-only view.
+  - Fix: Return an explicit list: name, address, phone, email, gstin, state, website, currency, footerNote, logoUrl.
+- **Custom quotation items cannot have a product image** `apps/api/src/quotations/quotations.service.ts:401`
+  - Impact: Custom lines always print without a picture.
+  - Fix: Add an optional file link to `QuotationItem`, using the existing image pipeline.
+- **Review flag text exposes purchase rates to quotation and price list viewers** `apps/api/src/quotations/quotations.service.ts:403`
+  - Impact: A user with quotations:view and no purchase rate or item access reads item purchase rates, old and new, from the quotation screen response.
+  - Fix: Store the figures separately and return a neutral reason ('Item rate changed') unless the actor has purchase_rates:view.
+- **Flagging frozen documents silently stops at 5000 costings** `apps/api/src/recalc/recalc.service.ts:137`
+  - Impact: For an item used in more than 5000 costings, quotations and price lists built on the remaining costings are not flagged after a rate change.
+  - Fix: Query quotations and lists with a relation filter on costing usage rather than a capped id list.
+- **Frozen-document flagging silently stops at 5,000 costings** `apps/api/src/recalc/recalc.service.ts:137`
+  - Impact: When a commonly used item appears in more than 5,000 costings, an arbitrary subset of quotations and price lists built on the others gets no review flag after a rate change, and `flaggedCount` is under-reported without any warning.
+  - Fix: Remove the list and use a relation filter: `items: { some: { costing: { deletedAt: null, ...where } } }`.
+- **Review flags of soft-deleted documents stay open** `apps/api/src/recalc/recalc.service.ts:161`
+  - Impact: 'Documents to review' keeps listing deleted quotations and price lists, whose links return 404, and the count stays inflated.
+  - Fix: Resolve flags in the delete transaction, and filter on the document's deletedAt in openFlags.
+- **Wastage cost and group totals are recomputed outside the engine** `apps/api/src/reports/report-defs.ts:134`
+  - Impact: The Wastage and Group Material report totals can differ by paise per line from the sum of Costing.materialWastage on the same costings. With roundLines=false, printed group material totals (sum of rounded lines) need not sum to the printed Material cost. This breaches 'never duplicate calculation logic'.
+  - Fix: Persist wastageCost per material row and group totals from the engine result, then read them in reports and prints.
+- **Reports round purchase rates to 2 decimals although rates are stored at 4-6** `apps/api/src/reports/report-defs.ts:164`
+  - Impact: An item bought by the gram at 0.0042 shows min, max, avg and current as 0.00 on screen, in Excel and in PDF. A change from 0.125 to 0.128 shows as 0.13 to 0.13 while Change % says 2.40.
+  - Fix: Add a 'rate' column type with 4 decimals and use it for rate columns.
+- **Wastage and Labour reports merge different items that share a name** `apps/api/src/reports/report-defs.ts:235`
+  - Impact: Two items with different codes and the same name 'Screw' appear as one row with combined quantity and cost.
+  - Fix: Group by itemId / labourId and add a code column.
+- **The upgrade path's seed catch-up is never executed by a test** `apps/api/src/seed/seed.ts:70`
+  - Impact: A bug in the catch-up loop (wrong role lookup, skipDuplicates removed, or overwriting customised roles, contrary to the doc's 'never removes or overwrites') passes the suite. It would only show on an existing installation.
+  - Fix: Add a mocked-prisma test: an existing role with customised grants receives only the missing customer_groups grants and no delete is called.
+- **Interactive transactions request a second pooled connection** `apps/api/src/settings/numbering.service.ts:24`
+  - Impact: A burst of concurrent document creates equal to the pool size (5 on a 2-core server) holds every connection while each waits for a second one. They then fail with transaction or pool timeouts and return 500.
+  - Fix: Read settings before opening the transaction, or pass tx into settings.get and countAffected.
+- **Duplicating a template drops its reference images** `apps/api/src/templates/templates.service.ts:197`
+  - Impact: The copied template starts with no product reference images.
+  - Fix: Call `images.copyLinks({kind:'template',id},{kind:'template',id:newId})` after create.
+- **Admin-set passwords skip the password rule** `apps/api/src/users/users.dto.ts:9`
+  - Impact: An admin can set 'aaaaaaaa' or '12345678'. Since mustChangePassword is not enforced by the API, that password can stay in use.
+  - Fix: Export PASSWORD_RULE and PASSWORD_MESSAGE and apply @Matches on both DTOs.
+- **Temporary passwords set by an admin skip the password policy** `apps/api/src/users/users.dto.ts:9`
+  - Impact: An admin can set `aaaaaaaa` or `12345678` as a user's password, and it remains in use because mustChangePassword is not enforced.
+  - Fix: Export PASSWORD_RULE and PASSWORD_MESSAGE from auth.dto.ts and apply them to CreateUserDto.password and AdminResetPasswordDto.newPassword.
+- **Privilege grants and account changes missing from the audit log** `apps/api/src/users/users.service.ts:59`
+  - Impact: A new user created with the Admin role, or a new role created with all permissions, shows in the audit log with no trace of what was granted. This conflicts with the binding rule to keep audit logs.
+  - Fix: Add roleIds and permissionKeys to the metadata, and log the profile update and session revocation.
+- **Non-super user can reactivate a deactivated super admin** `apps/api/src/users/users.service.ts:77`
+  - Impact: One super admin deactivates another, for example a departed owner. Any users:edit holder calls PATCH /users/:id/status {isActive:true} and the account can sign in again.
+  - Fix: Drop the !isActive condition so both directions need a super admin.
+- **Dead dependencies, an empty package and unused code** `apps/web/package.json:16`
+  - Impact: The unused packages add install and lockfile weight, and more to audit in pnpm audit. Developers editing `sel` will see no visual change. The profile's 'last used' time is only as fresh as the last login or token refresh.
+  - Fix: Remove the two dependencies unless the planned DataTable needs react-table (the plan names a hand-written data-table.tsx, not this library). Delete packages/ui and its Dockerfile line, and drop @costing/types from web. Either call touchSession, throttled, or remove it. Delete `sel` constants and pass only layout classes.
+- **Empty and loading states are missing on audit logs, recent activity and the roles page** `apps/web/src/app/(app)/audit-logs/page.tsx:20`
+  - Impact: A filtered or empty audit log, or a slow request, looks like a broken page.
+  - Fix: Add a 'No audit entries.' row plus loading text, matching the other list pages.
+- **The costing screen does not show Prepared By or the Template** `apps/web/src/app/(app)/costings/[id]/page.tsx:20`
+  - Impact: A user viewing a costing cannot see who prepared it or which template and version it came from.
+  - Fix: Pass both through `meta` and show them in the header card.
+- **Printed images shrank 20% with the spacing token, contrary to the documented rule** `apps/web/src/app/(app)/costings/[id]/print/page.tsx:54`
+  - Impact: Paper output changed with an on-screen density setting. Product images on quotations and price lists print noticeably smaller than designed.
+  - Fix: Use rem sizes in print views, for example `h-[16rem] w-[16rem]`, `h-[3.5rem]`, or scope `--spacing: 0.25rem` to the print `article`.
+- **Default document dates use the UTC date, which is the previous day in India before 05:30** `apps/web/src/app/(app)/costings/new/page.tsx:24`
+  - Impact: A costing, quotation, purchase entry or price list started at 02:00 IST defaults to yesterday. Quotation validity is calculated from that date.
+  - Fix: Build the default from local date parts in a shared helper.
+- **Display and Excel helpers are duplicated across files with inconsistent behaviour** `apps/web/src/app/(app)/costings/page.tsx:13`
+  - Impact: A formatting or status change has to be made in many places, and the same empty value can show differently across screens: for example the dashboard could print NaN where the editor prints a dash.
+  - Fix: Move `money` and the status-to-tone maps to one module in lib/, and have rates-excel use the excel-io helper.
+- **Export Excel menu uses a permission the API does not check** `apps/web/src/app/(app)/layout.tsx:58`
+  - Impact: An Accountant has export rights but does not see the Export page in the menu. It is reachable only by typing /data/export.
+  - Fix: Show the entry when GET /data/export/kinds is non-empty, or check for any *:export permission.
+- **Icon rail hides Sign out, and no sidebar entry is active on /reports** `apps/web/src/app/(app)/layout.tsx:194`
+  - Impact: In rail mode the user must expand the sidebar to sign out. On the reports pages nothing in the sidebar shows where the user is, and the Reports category can be folded while they are on it.
+  - Fix: Keep the sign-out icon in rail mode. Treat `/reports` and `/reports/*` as current for the Reports group by adding a non-anchor 'All Reports' item.
+- **No sign-out control while the sidebar is collapsed to the rail** `apps/web/src/app/(app)/layout.tsx:194`
+  - Impact: With the rail state remembered in localStorage, a desktop user sees no way to sign out until they expand the sidebar.
+  - Fix: Keep an icon-only sign-out button visible in rail mode.
+- **Dashboard screen does not show the customer count the API returns** `apps/web/src/app/(app)/page.tsx:14`
+  - Impact: The figure is fetched but never displayed.
+  - Fix: Add a customers tile to STATS linking to /masters/customers.
+- **Keyless fragments in two table lists** `apps/web/src/app/(app)/purchase-rates/tabs.tsx:54`
+  - Impact: React logs key warnings and reconciles these rows by position, so expanded supplier or error rows are re-created when the list changes.
+  - Fix: Use `<Fragment key={i.id}>`.
+- **The 'Rate updated' confirmation and server warning are never shown** `apps/web/src/app/(app)/purchase-rates/tabs.tsx:130`
+  - Impact: After applying a rate change the form just empties, with no success message, and any warning returned by the API is lost.
+  - Fix: Render the apply result outside the `p &&` block.
+- **Browser-side float arithmetic on money values on two screens** `apps/web/src/app/(app)/quotations/[id]/print/page.tsx:29`
+  - Impact: This breaks the binding rule 'backend is the source of truth, never JS floating point for money'. The figures are display-only and rounded to 2 decimals, but they are calculated in the browser, not by the server.
+  - Fix: Return these combined discount and delta values from the API as Decimal strings.
+- **Quotation print preview always hides the GST breakdown** `apps/web/src/app/(app)/quotations/[id]/print/page.tsx:30`
+  - Impact: The internal print of a quotation with mixed GST rates has no GST-by-rate lines, but the customer's share link does for the same document.
+  - Fix: Have GET /quotations/:id return gstBreakdown and pass it through.
+- **Printed report silently stops at 5,000 rows with no notice on paper** `apps/web/src/app/(app)/reports/[id]/page.tsx:99`
+  - Impact: A report with 6,000 rows prints 5,000 rows beneath totals for 6,000, with nothing on paper to say so.
+  - Fix: Fetch the full set for printing, or show the truncation notice and row count in print.
+- **Sidebar anchor links do not scroll on first arrival** `apps/web/src/app/(app)/reports/page.tsx:18`
+  - Impact: From another page, Material, Labour, Supplier, Profit and Quotation Reports all open at the top of the same page, and 'Costing Settings' opens at the top of Settings, unless the data was already cached.
+  - Fix: After data loads, scroll to location.hash in an effect, or render the section containers before the data arrives.
+- **Delete role has no confirmation** `apps/web/src/app/(app)/roles/page.tsx:54`
+  - Impact: One click deletes a role, and the Delete button sits directly next to Save permissions.
+  - Fix: Add confirm() naming the role and its userCount.
+- **Users without dashboard:view land on an error page after login** `apps/web/src/app/login/page.tsx:21`
+  - Impact: A role without the dashboard, such as the planned Designer role, sees 'Missing permission: dashboard:view' as its first screen.
+  - Fix: Land on the first permitted nav item, or skip the dashboard query and show a neutral welcome when the permission is missing.
+- **Changing a category keeps the old item rows, hidden behind a blank dropdown** `apps/web/src/components/costing-editor.tsx:131`
+  - Impact: After a category change the rows look empty, the summary falls back to 'Complete the required fields' and Save fails with a path-style server error for a row that appears unfilled.
+  - Fix: On category change, clear that block's materials or items after a confirmation.
+- **Group subtotals use the form index while server ids use the sanitized index, and raw ids are displayed** `apps/web/src/components/costing-editor.tsx:176`
+  - Impact: With an unfilled group above a filled one, the blank card shows the filled group's Material and Labour figures and the real group shows none. The summary shows 'Group wastage g0: 5%' instead of the group's name.
+  - Fix: Add groups to keyMap, and resolve the label from groupOptions.
+- **Three button heights are mixed next to each other, h-7, h-8 and h-9** `apps/web/src/components/costing-editor.tsx:183`
+  - Impact: Controls in the same row do not line up, and 22.4px buttons are small for touch use.
+  - Fix: Remove the h-8 and mb-0.5 overrides so all form buttons use the default h-9, and keep one compact size for row actions.
+- **Costing expense help text promises a timing override, but no control exists** `apps/web/src/components/costing-editor.tsx:217`
+  - Impact: Users cannot override before/after GST per costing even though the API supports it.
+  - Fix: Add an Apply timing Select with a blank option, or remove the wording.
+- **'Saved' message on the costing editor is lost immediately** `apps/web/src/components/costing-editor.tsx:338`
+  - Impact: The message 'Saved. Totals were recalculated by the server.' at line 398 flashes at most briefly, and the user cannot tell whether the save worked.
+  - Fix: Keep the saved state in the page component, or show it from the mutation at page level.
+- **An image description cannot be cleared** `apps/web/src/components/image-manager.tsx:85`
+  - Impact: Emptying a description and tabbing out shows the error 'body: Nothing to update', and the old text stays.
+  - Fix: Allow an explicit empty description in the schema (for example `z.string().trim().max(200).optional()` for this schema).
+- **A quick-added record stays in a dependent dropdown after its parent changes** `apps/web/src/components/master-form.tsx:41`
+  - Impact: In the Item form, quick-add a category under Group A and then change the group to B: the Group A category is still offered under B. The API then refuses it with 'Category does not belong to the selected group'.
+  - Fix: Drop `created` once it appears in the options list, or reset it when the filter value changes (for example, key the component by filter value).
+- **Dialogs and the mobile drawer do not manage keyboard focus** `apps/web/src/components/master-form.tsx:188`
+  - Impact: Keyboard users tab into hidden or background controls, and focus is not returned to the dropdown after quick add closes (`close(false)`, combobox.tsx:93).
+  - Fix: Add dialog semantics, a focus trap and Escape to both variants. Use `invisible` on the closed drawer below md and restore focus on close.
+- **The price list screen and exports do not show Basic Cost when the base is total cost** `apps/web/src/components/price-list-editor.tsx:158`
+  - Impact: With profit on cost incl. GST, the basic cost of a product is not visible on the list, and the GST on cost cannot be seen.
+  - Fix: Add a Basic cost figure to the editor row and the internal Excel export.
+- **Print toolbar labels stack above their dropdowns since the SelectBox conversion** `apps/web/src/components/print-kit.tsx:47`
+  - Impact: In the `items-center` toolbar each labelled control is about 47px tall next to 29px buttons, with the label above and the control indented 6.4px. This is a visible misalignment on all three print previews and the recalculation policy card.
+  - Fix: Make the label `inline-flex items-center gap-2` and drop `ml-2` from the SelectBox.
+- **The costing reference is not visible on quotations** `apps/web/src/components/quotation-editor.tsx:44`
+  - Impact: Staff cannot see which costing a line was priced from without going to other screens.
+  - Fix: Show `costingNumber` on the line card, and add it to internal exports (not to the customer share page).
+- **Some validation errors never reach the screen** `apps/web/src/components/quotation-editor.tsx:172`
+  - Impact: Creating a quotation with no products shows only 'Some fields need attention (highlighted in red above)' with nothing in red; 'Add at least one product' is an empty paragraph. A blank custom rate blocks Save the same way.
+  - Fix: Wrap the string with `new Error(...)` or make ErrorText accept strings, and add `<Err name={`${base}.rate`} />` to the custom rate.
+- **Line images and stale badges come from serverItems by position, so they shift after a row is removed** `apps/web/src/components/quotation-editor.tsx:174`
+  - Impact: Delete line 1 of a saved quotation or price list: line 2 now shows the deleted line's image and 'out of date' badge until save.
+  - Fix: Match by costingId or priceListItemId rather than by index.
+- **Combobox small state bugs: stale query, no scroll to selection on reopen, focus style overridden** `apps/web/src/components/ui/combobox.tsx:67`
+  - Impact: After typing and clicking away, the next open shows a filtered list with the old text. In lists longer than the panel, the selected row is out of view on the second open. Focus rings differ between inputs and dropdowns.
+  - Fix: Reset `query` in the effect that runs when `open` becomes false, call scrollIntoView once the panel is placed, and put the global focus rules in `@layer base`.
+- **Combobox quirks: stale search text and the field's own label reopens it** `apps/web/src/components/ui/combobox.tsx:67`
+  - Impact: Reopening after an outside click shows the list still filtered by old text. Clicking the field's label, hint or error text while open does not close the dropdown.
+  - Fix: Clear the query in the outside-click handler, and treat the wrapping label like the trigger (or render the label with a non-label element for comboboxes).
+- **Search inputs and the combobox search box have only a placeholder as their label** `apps/web/src/components/ui/combobox.tsx:130`
+  - Impact: Screen readers announce unnamed fields once the placeholder is gone, and the clear action is mouse-only.
+  - Fix: Add aria-label to these inputs and pass the trigger's label to the search input and listbox. Move the clear control out of the button, or support Delete on the trigger.
+- **Low-contrast text and icons: slate-400 hints, slate-300 matrix state, white on amber chip** `apps/web/src/components/ui/combobox.tsx:144`
+  - Impact: 11px item codes in the dropdown are hard to read, and they are what users use to tell similar items apart.
+  - Fix: Use slate-500 for hints and example text, a slate-500 dash in the matrix, and a dark icon colour on the amber chip.
+- **Very small conversion factors become zero or an unparseable '5e-7' in edit forms and master exports** `apps/web/src/lib/masters.tsx:10`
+  - Impact: An item conversion of 0.0000005 opens as 5e-7 and the form refuses to save until retyped, and the exported master file fails on re-import. A baseFactor of 0.000000001 is saved as 0, so convertQuantity gives factor 0 and that material costs 0 with no warning.
+  - Fix: Pass Decimal strings through unchanged (trim zeros without Number), and reject factors that round to 0 at scale 8.
+- **Number() round-trip when loading master forms breaks small factors and long decimals** `apps/web/src/lib/masters.tsx:10`
+  - Impact: Opening a unit with factor 0.0000001 and saving gives 'Must be a number' on a value the user never touched. A long-precision rate is silently altered on save, which conflicts with the 'never JS floating point for money' rule.
+  - Fix: Strip trailing zeros from the API's decimal string without going through Number (for example with a string regex).
+- **The proxy body limit is lower than the batch size the API allows** `deploy/Caddyfile:17`
+  - Impact: In production, a batch of images within the API's stated limits (for example 3 photos of 5 MB) is rejected by Caddy before reaching the API. The web client shows the raw status text instead of a validation message.
+  - Fix: Either raise max_size to about 85MB or reduce MAX_FILES_PER_REQUEST and MAX_UPLOAD_BYTES so the batch fits under 12 MB. The lower limit is preferable, as it also bounds multer memory.
+- **Database and upload backups are created readable by other local users** `deploy/backup.sh:12`
+  - Impact: Any other local account on the server can read full dumps, including bcrypt password hashes, customer data, costing figures and the audit log.
+  - Fix: Add `umask 077` at the top of backup.sh and `chmod 700 "$OUT"`. Pass `-u "$(id -u):$(id -g)"` to the docker run so the tar is owned by the operator, and set umask inside that container command.
+- **Re-running smoke-admin.sh saves a password that does not work** `deploy/smoke-admin.sh:10`
+  - Impact: A second run reports success while the saved credentials cannot sign in, and the old working password is lost from the file.
+  - Fix: Fail if the user already exists, or reset the password explicitly through the app.
+- **http://localhost trial mode is undocumented, and the compose default builds a malformed origin from it** `docker-compose.prod.yml:44`
+  - Impact: Switching between trial and real domain is undocumented. The CORS origin is wrong in trial mode, though that does not break the same-origin app. If WEB_ORIGIN is set by hand and DOMAIN is left blank, line 68 passes an empty DOMAIN to the Caddyfile because that line has no `:?` guard.
+  - Fix: Document both forms and that WEB_ORIGIN must follow DOMAIN. Add WEB_ORIGIN to the example file and use `${DOMAIN:?}` on line 68.
+- **The development database publishes a weak login on all network interfaces** `docker-compose.yml:8`
+  - Impact: While the dev stack runs, any machine on the same network can connect to port 5434 as costing/costing and read or change all trial data, including password hashes.
+  - Fix: Use `ports: ["127.0.0.1:5434:5432"]`.
+- **Development compose publishes PostgreSQL on all interfaces with a fixed password** `docker-compose.yml:8`
+  - Impact: On a machine reachable from a network, anyone who can reach port 5434 can log in as the costing superuser (the POSTGRES_USER role) to the dev database.
+  - Fix: Use `"127.0.0.1:5434:5432"`.
+- **Acceptance and deployment docs are out of date against the current state** `docs/acceptance.md:3`
+  - Impact: The owner's sign-off document misstates what has been verified and does not track the business extension.
+  - Fix: Update the figures and status, and add rows for the later owner requests.
+- **Permission catalogue size is wrong in the docs** `docs/acceptance.md:8`
+  - Impact: The documented catalogue has 220 permissions; the real one has 230.
+  - Fix: Change to 23 modules and add customer groups to row 1.
+- **Test counts in the docs are stale and disagree with each other** `docs/acceptance.md:27`
+  - Impact: Criterion 21 ('critical tests pass') cites a number that matches no run, and the two docs contradict each other.
+  - Fix: Update the numbers to 152 and 412, or drop them and say 'run pnpm test'.
+- **architecture.md header and phase log contain statements that are false today** `docs/architecture.md:5`
+  - Impact: A reader gets the wrong architecture, specifically that the web has a calculation engine copy, which conflicts with the binding rule on one calculation source.
+  - Fix: Rewrite the opening section to the current state and mark superseded notes in the phase log.
+- **database.md counts are outdated** `docs/database.md:3`
+  - Impact: The design document does not describe the current schema.
+  - Fix: Update the numbers and add a short note for extensions 1 and 2.
+- **Status docs contradict each other and no longer match reality** `docs/deployment.md:5`
+  - Impact: Readers cannot tell what has been proven. What is actually still unproven is narrower: backup and restore and a real domain (docs/smoke-test.md:41-42). That narrower gap is exactly where the defects above sit.
+  - Fix: Update both lines to state that images and migrations are verified locally, while backup, restore and HTTPS on a real domain are not.
+- **The update instructions omit the seed step that new permissions require** `docs/deployment.md:49`
+  - Impact: After an update done as documented, non-super-admin users in the Admin role lack customer_groups permissions until someone finds the note in architecture.md.
+  - Fix: Add the seed command to section 3, or run the idempotent seed step in the migrate service.
+- **A GST-inclusive rate does not return to the entered amount after line rounding** `packages/costing-engine/src/costing.ts:260`
+  - Impact: Computed. A material entered as 100 inclusive at 18% gives basic 84.75, GST 15.26, total 100.01, and selling is 120.01 instead of 120 at 20% markup. The drift grows with the number of rows.
+  - Fix: For inclusive rates, derive line GST as gross line minus rounded net line, so net + GST equals the entered gross.
+- **With roundLines off, the breakdown does not add up** `packages/costing-engine/src/costing.ts:313`
+  - Impact: Computed. With roundLines false, material 1.005 and labour 1.005, the breakdown shows material 1.01, labour 1.01, basic 2.01. The same applies to the stored columns (costings.service.ts:290-291), so the printed sheet is out by 0.01. Tests allow for this (tol × 3 at costing.invariants.spec.ts:53). With the default roundLines true, 5,000 random costings reconciled exactly.
+  - Fix: Derive basic and total from the rounded component values, so displayed figures always add up.
+- **Validators accept values the columns round to zero or cannot hold, giving raw 500s and silent rounding** `packages/validators/src/common.ts:3`
+  - Impact: One such row fails the whole purchase import with a 500 and no row message. Larger scale also shifts money later: qty 20.94567 × 1000 = 20945.67 on save, but the stored 20.9457 gives 20945.70 on the next recalculation with no master change.
+  - Fix: Limit digits and scale in the validators to match the columns, and add an exception filter mapping check and overflow errors to 400.
+- **Validators and output code use JS floating point on money, contrary to the binding rule** `packages/validators/src/common.ts:4`
+  - Impact: Node check: `Number('100.00000000000000001') <= 100` is true, and min 12345678901234.5679 vs max 12345678901234.5678 passes `min > max` as false, so bad values are accepted (item min/max has no later Decimal check). Line discount 0.1 + share 0.2 writes 0.30000000000000004 as the Excel cell value (displayed 0.30). Displayed amounts are correct at ordinary sizes, so this is mainly a rule breach.
+  - Fix: Use Decimal comparisons in validators (decimal.js or the engine's `d`) and `d(a).plus(b)` in the print and export code; return such sums from the API instead of adding in the browser.
+- **Values too large for the column pass validation and return HTTP 500 on save, even though preview succeeds** `packages/validators/src/costings.ts:78`
+  - Impact: Markup 100000 calculates correctly in preview (engine has no limit), then Save returns a generic 500 instead of a field message. The same happens with quantity 100000000000000 (Decimal(18,4)). The owner's rule is to validate all inputs on the backend.
+  - Fix: Add max-digit limits per field in the validators matching the column precision.
+- **Unit "Decimal Precision" is stored but never applied** `packages/validators/src/masters.ts:28`
+  - Impact: 1.5 pieces is accepted, although Piece has precision 0, and quantities are not rounded to the unit's precision.
+  - Fix: Validate or round row quantities against the unit's precision in `prepare`, templates and purchase rates.
+- **A single purchase entry accepts a future date that then pins the item's rate** `packages/validators/src/masters.ts:120`
+  - Impact: A typo of 2062-01-15 makes that entry the current rate. Later correct purchases are older, so the rate does not move until the entry is found and deleted.
+  - Fix: Add the same not-in-the-future check on the server for single entries.

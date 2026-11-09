@@ -1,0 +1,34 @@
+node_modules
+dist
+.next
+.turbo
+.env
+*.log
+uploads
+.pnpm-store
+.cache
+backups
+.env.production
+.smoke-credentials
+
+# every real env file stays local; only the examples are shared
+.env.*
+!.env.example
+!.env.production.example
+
+# machine, editor and tool specific
+.claude/
+.idea
+.vscode
+.mcp.json
+.bash_profile
+.bashrc
+.profile
+.zprofile
+.zshrc
+.gitconfig
+.gitmodules
+.ripgreprc
+.DS_Store
+tsconfig.tsbuildinfo
+*.tsbuildinfo

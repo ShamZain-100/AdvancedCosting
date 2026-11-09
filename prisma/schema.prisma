@@ -1,0 +1,1460 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pg_trgm]
+}
+
+enum PermissionEffect {
+  ALLOW
+  DENY
+}
+
+model User {
+  id                 String    @id @default(uuid())
+  email              String    @unique
+  name               String
+  mobile             String?
+  passwordHash       String
+  isActive           Boolean   @default(true)
+  isSuperAdmin       Boolean   @default(false)
+  mustChangePassword Boolean   @default(false)
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  roles              UserRole[]
+  permissions        UserPermission[]
+  dealers            UserPriceListDealer[]
+  notifications      Notification[]
+  pushSubscriptions  PushSubscription[]
+  sessions           Session[]
+  resetTokens        PasswordResetToken[]
+  auditLogs          AuditLog[]
+  costingsPrepared   Costing[]             @relation("CostingPreparedBy")
+  quotationsPrepared Quotation[]           @relation("QuotationPreparedBy")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id     String @id @default(uuid())
+  key    String @unique // "<module>:<action>"
+  module String
+  action String
+
+  roles RolePermission[]
+  users UserPermission[]
+
+  @@index([module])
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+// Per-user override on top of roles. DENY wins over any role grant.
+model UserPermission {
+  userId       String
+  permissionId String
+  effect       PermissionEffect
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission   Permission       @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([userId, permissionId])
+  @@index([permissionId])
+}
+
+model Session {
+  id               String    @id @default(uuid())
+  userId           String
+  refreshTokenHash String    @unique
+  userAgent        String?
+  ip               String?
+  createdAt        DateTime  @default(now())
+  lastUsedAt       DateTime  @default(now())
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+// ───────────────────────── Phase 3: master data ─────────────────────────
+// Masters are soft-deleted (deletedAt) so future costings/quotations keep their references.
+// On soft delete the code is suffixed so it can be reused.
+
+enum UnitType {
+  WEIGHT
+  LENGTH
+  AREA
+  VOLUME
+  COUNT
+  OTHER
+}
+
+enum ExpenseCalcMethod {
+  FIXED
+  PERCENTAGE
+  QUANTITY_BASED
+}
+
+enum GstTiming {
+  BEFORE_GST
+  AFTER_GST
+}
+
+enum RateMethod {
+  LAST_PURCHASE
+  WEIGHTED_AVERAGE
+  SIMPLE_AVERAGE
+  MANUAL
+}
+
+enum ConversionFormula {
+  FIXED_FACTOR
+  CUSTOM_FORMULA
+}
+
+model Type {
+  id          String    @id @default(uuid())
+  name        String
+  code        String    @unique
+  description String?
+  isActive    Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdBy   String?
+  updatedBy   String?
+
+  groups    ItemGroup[]
+  items     Item[]
+  labours   Labour[]
+  templates Template[]
+  costings  Costing[]
+}
+
+model ItemGroup {
+  id          String    @id @default(uuid())
+  name        String
+  code        String    @unique
+  typeId      String
+  description String?
+  isActive    Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdBy   String?
+  updatedBy   String?
+
+  type           Type            @relation(fields: [typeId], references: [id])
+  categories     ItemCategory[]
+  items          Item[]
+  templateGroups TemplateGroup[]
+  costingGroups  CostingGroup[]
+
+  @@index([typeId])
+}
+
+model ItemCategory {
+  id          String    @id @default(uuid())
+  name        String
+  code        String    @unique
+  groupId     String
+  description String?
+  isActive    Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdBy   String?
+  updatedBy   String?
+
+  group              ItemGroup          @relation(fields: [groupId], references: [id])
+  items              Item[]
+  templateCategories TemplateCategory[]
+  costingCategories  CostingCategory[]
+
+  @@index([groupId])
+}
+
+model Unit {
+  id               String    @id @default(uuid())
+  name             String
+  symbol           String    @unique
+  unitType         UnitType
+  decimalPrecision Int       @default(2)
+  // Multiplier to the base unit of this unit type (e.g. KG→1, Gram→0.001). Null = no generic conversion.
+  baseFactor       Decimal?  @db.Decimal(20, 8)
+  isActive         Boolean   @default(true)
+  deletedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  createdBy        String?
+  updatedBy        String?
+
+  items            Item[]
+  itemConversions  ItemUnitConversion[]
+  purchaseRates    PurchaseRate[]
+  labours          Labour[]
+  conversionsFrom  AreaConversion[]     @relation("ConversionFrom")
+  conversionsTo    AreaConversion[]     @relation("ConversionTo")
+  templateItems    TemplateItem[]
+  templateLabour   TemplateLabour[]
+  costingMaterials CostingMaterial[]
+  costingLabour    CostingLabour[]
+  quotationItems   QuotationItem[]
+}
+
+model Supplier {
+  id             String    @id @default(uuid())
+  name           String
+  code           String    @unique
+  contactPerson  String?
+  mobile         String?
+  email          String?
+  address        String?
+  gstin          String?
+  state          String?
+  openingBalance Decimal   @default(0) @db.Decimal(18, 2)
+  paymentTerms   String?
+  notes          String?
+  isActive       Boolean   @default(true)
+  deletedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  createdBy      String?
+  updatedBy      String?
+
+  itemSuppliers    ItemSupplier[]
+  defaultFor       Item[]
+  purchaseRates    PurchaseRate[]
+  costingMaterials CostingMaterial[]
+
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Supplier_name_trgm_idx")
+  @@index([code(ops: raw("gin_trgm_ops"))], type: Gin, map: "Supplier_code_trgm_idx")
+}
+
+model Labour {
+  id          String    @id @default(uuid())
+  name        String
+  code        String    @unique
+  defaultRate Decimal   @default(0) @db.Decimal(18, 4)
+  unitId      String?
+  typeId      String?
+  description String?
+  isActive    Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdBy   String?
+  updatedBy   String?
+
+  unit           Unit?            @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  type           Type?            @relation(fields: [typeId], references: [id], onDelete: Restrict)
+  templateLabour TemplateLabour[]
+  costingLabour  CostingLabour[]
+
+  @@index([unitId])
+  @@index([typeId])
+}
+
+model Expense {
+  id                String            @id @default(uuid())
+  name              String
+  code              String            @unique
+  calculationMethod ExpenseCalcMethod @default(FIXED)
+  defaultValue      Decimal           @default(0) @db.Decimal(18, 4)
+  applyTiming       GstTiming         @default(BEFORE_GST)
+  /// an administrator-set overhead: added automatically (locked) to every costing and reported separately
+  isCompanyExpense  Boolean           @default(false)
+  isActive          Boolean           @default(true)
+  deletedAt         DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  createdBy         String?
+  updatedBy         String?
+  templateExpenses  TemplateExpense[]
+  costingExpenses   CostingExpense[]
+}
+
+model Item {
+  id                  String     @id @default(uuid())
+  name                String
+  code                String     @unique
+  typeId              String
+  groupId             String
+  categoryId          String
+  description         String?
+  unitId              String // base unit; unit conversions are expressed relative to it
+  defaultSupplierId   String?
+  defaultPurchaseRate Decimal    @default(0) @db.Decimal(18, 4)
+  // "Is capable for Min / Max / Average?" – when false only the standard rate is used.
+  hasRateRange        Boolean    @default(false)
+  minRate             Decimal?   @db.Decimal(18, 4)
+  maxRate             Decimal?   @db.Decimal(18, 4)
+  avgRate             Decimal?   @db.Decimal(18, 4)
+  rateMethod          RateMethod @default(LAST_PURCHASE)
+  gstPercent          Decimal    @default(0) @db.Decimal(7, 4)
+  isActive            Boolean    @default(true)
+  deletedAt           DateTime?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  createdBy           String?
+  updatedBy           String?
+
+  type             Type                  @relation(fields: [typeId], references: [id])
+  group            ItemGroup             @relation(fields: [groupId], references: [id])
+  category         ItemCategory          @relation(fields: [categoryId], references: [id])
+  unit             Unit                  @relation(fields: [unitId], references: [id])
+  defaultSupplier  Supplier?             @relation(fields: [defaultSupplierId], references: [id], onDelete: Restrict)
+  unitConversions  ItemUnitConversion[]
+  suppliers        ItemSupplier[]
+  areaConversions  AreaConversion[]
+  purchaseRates    PurchaseRate[]
+  rateHistory      PurchaseRateHistory[]
+  templateItems    TemplateItem[]
+  costingMaterials CostingMaterial[]
+
+  @@index([typeId])
+  @@index([groupId])
+  @@index([categoryId])
+  @@index([name])
+  @@index([unitId])
+  @@index([defaultSupplierId])
+  @@index([code(ops: raw("gin_trgm_ops"))], type: Gin, map: "Item_code_trgm_idx")
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Item_name_trgm_idx")
+}
+
+// "1 <unit> = <conversionValue> <item base unit>" e.g. 1 Meter = 3.15 KG for Metal Pipe MAX.
+model ItemUnitConversion {
+  id              String  @id @default(uuid())
+  itemId          String
+  unitId          String
+  conversionValue Decimal @db.Decimal(20, 8)
+  item            Item    @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  unit            Unit    @relation(fields: [unitId], references: [id])
+
+  @@unique([itemId, unitId])
+  @@index([unitId])
+}
+
+model ItemSupplier {
+  id         String   @id @default(uuid())
+  itemId     String
+  supplierId String
+  rate       Decimal  @default(0) @db.Decimal(18, 4)
+  isDefault  Boolean  @default(false)
+  item       Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+
+  @@unique([itemId, supplierId])
+  @@index([supplierId])
+}
+
+model AreaConversion {
+  id              String            @id @default(uuid())
+  name            String
+  fromUnitId      String
+  toUnitId        String
+  conversionValue Decimal           @db.Decimal(20, 8)
+  itemId          String?
+  formulaType     ConversionFormula @default(FIXED_FACTOR)
+  formula         String?
+  isActive        Boolean           @default(true)
+  deletedAt       DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  createdBy       String?
+  updatedBy       String?
+
+  fromUnit Unit  @relation("ConversionFrom", fields: [fromUnitId], references: [id])
+  toUnit   Unit  @relation("ConversionTo", fields: [toUnitId], references: [id])
+  item     Item? @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([itemId])
+  @@index([fromUnitId])
+  @@index([toUnitId])
+}
+
+// ───────────────────────── Phase 4: purchase rates ─────────────────────────
+
+enum RateChangeSource {
+  PURCHASE
+  PURCHASE_DELETED
+  MANUAL
+  IMPORT
+}
+
+// One purchase of an item from a supplier. Rates are stored as entered (per `unitId`)
+// and normalised to the item's base unit (`baseRate`, `baseQuantity`) for statistics.
+model PurchaseRate {
+  id           String    @id @default(uuid())
+  itemId       String
+  supplierId   String?
+  unitId       String
+  rate         Decimal   @db.Decimal(18, 4)
+  quantity     Decimal   @default(1) @db.Decimal(18, 4)
+  baseRate     Decimal   @db.Decimal(18, 6)
+  baseQuantity Decimal   @db.Decimal(18, 6)
+  purchaseDate DateTime  @db.Date
+  referenceNo  String?
+  notes        String?
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  createdBy    String?
+
+  item     Item      @relation(fields: [itemId], references: [id])
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  unit     Unit      @relation(fields: [unitId], references: [id])
+
+  @@index([itemId, purchaseDate])
+  @@index([supplierId, itemId, purchaseDate])
+  @@index([unitId])
+}
+
+// Append-only log of every change to an item's current purchase rate (with min/max/avg snapshot).
+model PurchaseRateHistory {
+  id        String           @id @default(uuid())
+  itemId    String
+  oldRate   Decimal          @db.Decimal(18, 4)
+  newRate   Decimal          @db.Decimal(18, 4)
+  minRate   Decimal?         @db.Decimal(18, 4)
+  maxRate   Decimal?         @db.Decimal(18, 4)
+  avgRate   Decimal?         @db.Decimal(18, 4)
+  source    RateChangeSource
+  reason    String?
+  /**
+   * how many dependents (live costings, quotations…) were affected when this change was made
+   */
+  impact    Json?
+  changedBy String?
+  changedAt DateTime         @default(now())
+
+  item Item @relation(fields: [itemId], references: [id])
+
+  @@index([itemId, changedAt])
+  @@index([changedAt])
+}
+
+model ImportHistory {
+  id          String   @id @default(uuid())
+  kind        String
+  fileName    String
+  totalRows   Int
+  successRows Int
+  failedRows  Int
+  errors      Json?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+
+  @@index([kind, createdAt])
+}
+
+// ───────────────────────── Phase 5: costing templates ─────────────────────────
+// A template is a reusable starting structure. Costings COPY it at creation (Phase 6),
+// so editing a template never changes existing costings. Each save bumps `version` and
+// stores a full snapshot in TemplateVersion.
+
+enum TemplateStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+model Template {
+  id             String         @id @default(uuid())
+  name           String
+  code           String         @unique
+  typeId         String
+  description    String?
+  wastagePercent Decimal        @default(0) @db.Decimal(7, 4)
+  gstPercent     Decimal        @default(0) @db.Decimal(7, 4)
+  markupPercent  Decimal        @default(0) @db.Decimal(9, 4)
+  status         TemplateStatus @default(ACTIVE)
+  version        Int            @default(1)
+  deletedAt      DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  createdBy      String?
+  updatedBy      String?
+
+  type     Type              @relation(fields: [typeId], references: [id])
+  groups   TemplateGroup[]
+  expenses TemplateExpense[]
+  versions TemplateVersion[]
+  costings Costing[]
+  images   TemplateImage[]
+
+  @@index([typeId])
+  @@index([name])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Template_name_trgm_idx")
+}
+
+model TemplateGroup {
+  id             String   @id @default(uuid())
+  templateId     String
+  groupId        String
+  sortOrder      Int      @default(0)
+  wastagePercent Decimal? @db.Decimal(7, 4)
+
+  template   Template           @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  group      ItemGroup          @relation(fields: [groupId], references: [id])
+  categories TemplateCategory[]
+  labour     TemplateLabour[]
+  expenses   TemplateExpense[]
+
+  @@unique([templateId, groupId])
+  @@index([groupId])
+}
+
+model TemplateCategory {
+  id              String   @id @default(uuid())
+  templateGroupId String
+  categoryId      String
+  sortOrder       Int      @default(0)
+  wastagePercent  Decimal? @db.Decimal(7, 4)
+
+  templateGroup TemplateGroup  @relation(fields: [templateGroupId], references: [id], onDelete: Cascade)
+  category      ItemCategory   @relation(fields: [categoryId], references: [id])
+  items         TemplateItem[]
+
+  @@unique([templateGroupId, categoryId])
+  @@index([categoryId])
+}
+
+model TemplateItem {
+  id                 String   @id @default(uuid())
+  templateCategoryId String
+  itemId             String
+  quantity           Decimal  @db.Decimal(18, 4)
+  unitId             String
+  wastagePercent     Decimal? @db.Decimal(7, 4)
+  notes              String?
+  sortOrder          Int      @default(0)
+
+  templateCategory TemplateCategory @relation(fields: [templateCategoryId], references: [id], onDelete: Cascade)
+  item             Item             @relation(fields: [itemId], references: [id])
+  unit             Unit             @relation(fields: [unitId], references: [id])
+
+  @@unique([templateCategoryId, itemId])
+  @@index([itemId])
+  @@index([unitId])
+}
+
+model TemplateLabour {
+  id              String   @id @default(uuid())
+  templateGroupId String
+  labourId        String
+  quantity        Decimal  @default(1) @db.Decimal(18, 4)
+  unitId          String?
+  /// null = use the labour master's default rate when costing
+  rate            Decimal? @db.Decimal(18, 4)
+  sortOrder       Int      @default(0)
+
+  templateGroup TemplateGroup @relation(fields: [templateGroupId], references: [id], onDelete: Cascade)
+  labour        Labour        @relation(fields: [labourId], references: [id])
+  unit          Unit?         @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
+  @@index([templateGroupId])
+  @@index([labourId])
+  @@index([unitId])
+}
+
+model TemplateExpense {
+  id                String             @id @default(uuid())
+  templateId        String
+  /// null = applies to the whole product
+  templateGroupId   String?
+  expenseId         String
+  calculationMethod ExpenseCalcMethod?
+  value             Decimal?           @db.Decimal(18, 4)
+  sortOrder         Int                @default(0)
+
+  template      Template       @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  templateGroup TemplateGroup? @relation(fields: [templateGroupId], references: [id], onDelete: Cascade)
+  expense       Expense        @relation(fields: [expenseId], references: [id])
+
+  @@index([templateId])
+  @@index([templateGroupId])
+  @@index([expenseId])
+}
+
+model TemplateVersion {
+  id         String   @id @default(uuid())
+  templateId String
+  version    Int
+  snapshot   Json
+  note       String?
+  createdBy  String?
+  createdAt  DateTime @default(now())
+
+  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, version])
+}
+
+// ───────────────────────── Phase 6: costing ─────────────────────────
+// A costing owns a COPY of everything it needs (names, rates, wastage). Templates and masters can
+// change afterwards without touching it. Rates follow the master only while pricingMode = LIVE;
+// approving a costing freezes it (SNAPSHOT).
+
+enum CostingStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+enum PricingMode {
+  LIVE
+  SNAPSHOT
+}
+
+enum RateBasisKind {
+  STANDARD
+  MIN
+  MAX
+  AVERAGE
+  SUPPLIER
+  CUSTOM
+}
+
+enum WastageMode {
+  PERCENT
+  QUANTITY
+}
+
+model NumberSequence {
+  key   String @id // e.g. "costing:2026"
+  value Int    @default(0)
+}
+
+model CostingSettings {
+  id                   Int      @id @default(1)
+  rules                Json
+  updatedAt            DateTime @updatedAt
+  updatedBy            String?
+  /// AUTO applies recalculations immediately, CONFIRM waits for an admin, MANUAL never queues
+  recalcMode           String   @default("CONFIRM")
+  /// flag frozen documents only when the change is at least this many percent
+  flagThresholdPercent Decimal  @default(0) @db.Decimal(7, 2)
+}
+
+model Costing {
+  id              String        @id @default(uuid())
+  costingNumber   String        @unique
+  productName     String
+  productCode     String?
+  typeId          String
+  templateId      String?
+  templateVersion Int?
+  description     String?
+  length          Decimal?      @db.Decimal(18, 4)
+  width           Decimal?      @db.Decimal(18, 4)
+  height          Decimal?      @db.Decimal(18, 4)
+  dimensionUnitId String?
+  quantity        Decimal       @default(1) @db.Decimal(18, 4)
+  unitId          String?
+  costingDate     DateTime      @db.Date
+  preparedById    String
+  notes           String?
+  status          CostingStatus @default(DRAFT)
+  pricingMode     PricingMode   @default(LIVE)
+  version         Int           @default(1)
+
+  wastagePercent Decimal @default(0) @db.Decimal(7, 4)
+  gstPercent     Decimal @default(0) @db.Decimal(7, 4)
+  markupPercent  Decimal @default(0) @db.Decimal(9, 4)
+  /// extra % on the total cost incl. GST, before markup
+  extraPercent   Decimal @default(0) @db.Decimal(9, 4)
+  /// calculation rules this costing was computed with
+  rules          Json
+
+  // computed totals (authoritative values come from the engine on every save)
+  materialCost       Decimal  @default(0) @db.Decimal(18, 2)
+  materialWastage    Decimal  @default(0) @db.Decimal(18, 2)
+  labourCost         Decimal  @default(0) @db.Decimal(18, 2)
+  expenseCost        Decimal  @default(0) @db.Decimal(18, 2)
+  basicCost          Decimal  @default(0) @db.Decimal(18, 2)
+  gstAmount          Decimal  @default(0) @db.Decimal(18, 2)
+  totalCostInclGst   Decimal  @default(0) @db.Decimal(18, 2)
+  extraAmount        Decimal  @default(0) @db.Decimal(18, 2)
+  /// part of expenseCost that came from company expenses
+  companyExpenseCost Decimal  @default(0) @db.Decimal(18, 2)
+  markupAmount       Decimal  @default(0) @db.Decimal(18, 2)
+  sellingPrice       Decimal  @default(0) @db.Decimal(18, 2)
+  profitAmount       Decimal  @default(0) @db.Decimal(18, 2)
+  profitPercent      Decimal  @default(0) @db.Decimal(9, 2)
+  netBasicRate       Decimal  @default(0) @db.Decimal(18, 2)
+  netSellingPrice    Decimal  @default(0) @db.Decimal(18, 2)
+  calculatedAt       DateTime @default(now())
+
+  approvedById    String?
+  approvedAt      DateTime?
+  /// ticked = this approved costing is on the price list, priced for every price list dealer
+  published       Boolean   @default(false)
+  publishedAt     DateTime?
+  publishedById   String?
+  rejectionReason String?
+
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?
+  updatedBy String?
+
+  type               Type                 @relation(fields: [typeId], references: [id])
+  preparedBy         User                 @relation("CostingPreparedBy", fields: [preparedById], references: [id])
+  template           Template?            @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  groups             CostingGroup[]
+  expenses           CostingExpense[]
+  revisions          CostingRevision[]
+  priceListItems     PriceListItem[]
+  quotationItems     QuotationItem[]
+  images             CostingImage[]
+  dealerPrices       CostingDealerPrice[]
+  recalculationItems RecalculationItem[]
+
+  @@index([typeId])
+  @@index([status])
+  @@index([costingDate])
+  @@index([productName])
+  @@index([preparedById])
+  @@index([templateId])
+  @@index([deletedAt, costingDate])
+  @@index([productName(ops: raw("gin_trgm_ops"))], type: Gin, map: "Costing_productName_trgm_idx")
+  @@index([costingNumber(ops: raw("gin_trgm_ops"))], type: Gin, map: "Costing_costingNumber_trgm_idx")
+}
+
+model CostingGroup {
+  id             String   @id @default(uuid())
+  costingId      String
+  groupId        String
+  sortOrder      Int      @default(0)
+  wastagePercent Decimal? @db.Decimal(7, 4)
+
+  costing    Costing           @relation(fields: [costingId], references: [id], onDelete: Cascade)
+  group      ItemGroup         @relation(fields: [groupId], references: [id])
+  categories CostingCategory[]
+  labour     CostingLabour[]
+  expenses   CostingExpense[]
+
+  @@unique([costingId, groupId])
+  @@index([groupId])
+}
+
+model CostingCategory {
+  id             String   @id @default(uuid())
+  costingGroupId String
+  categoryId     String
+  sortOrder      Int      @default(0)
+  wastagePercent Decimal? @db.Decimal(7, 4)
+
+  costingGroup CostingGroup      @relation(fields: [costingGroupId], references: [id], onDelete: Cascade)
+  category     ItemCategory      @relation(fields: [categoryId], references: [id])
+  materials    CostingMaterial[]
+
+  @@unique([costingGroupId, categoryId])
+  @@index([categoryId])
+}
+
+model CostingMaterial {
+  id                String        @id @default(uuid())
+  costingCategoryId String
+  itemId            String
+  notes             String?
+  quantity          Decimal       @db.Decimal(18, 4)
+  unitId            String
+  wastageMode       WastageMode   @default(PERCENT)
+  wastagePercent    Decimal?      @db.Decimal(7, 4)
+  wastageQuantity   Decimal?      @db.Decimal(18, 4)
+  rateBasis         RateBasisKind @default(STANDARD)
+  supplierId        String?
+  /// per row unit, as used in the calculation
+  rate              Decimal       @db.Decimal(18, 4)
+  itemGstPercent    Decimal?      @db.Decimal(7, 4)
+  effectiveQuantity Decimal       @default(0) @db.Decimal(18, 4)
+  total             Decimal       @default(0) @db.Decimal(18, 2)
+  sortOrder         Int           @default(0)
+
+  costingCategory CostingCategory @relation(fields: [costingCategoryId], references: [id], onDelete: Cascade)
+  item            Item            @relation(fields: [itemId], references: [id])
+  unit            Unit            @relation(fields: [unitId], references: [id])
+  supplier        Supplier?       @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+
+  @@index([itemId])
+  @@index([costingCategoryId])
+  @@index([unitId])
+  @@index([supplierId])
+}
+
+model CostingLabour {
+  id             String  @id @default(uuid())
+  costingGroupId String
+  labourId       String
+  quantity       Decimal @default(1) @db.Decimal(18, 4)
+  unitId         String?
+  /// true when the user overrode the labour master rate
+  customRate     Boolean @default(false)
+  rate           Decimal @db.Decimal(18, 4)
+  total          Decimal @default(0) @db.Decimal(18, 2)
+  sortOrder      Int     @default(0)
+
+  costingGroup CostingGroup @relation(fields: [costingGroupId], references: [id], onDelete: Cascade)
+  labour       Labour       @relation(fields: [labourId], references: [id])
+  unit         Unit?        @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
+  @@index([costingGroupId])
+  @@index([labourId])
+  @@index([unitId])
+}
+
+model CostingExpense {
+  id                String            @id @default(uuid())
+  costingId         String
+  /// null = whole product
+  costingGroupId    String?
+  expenseId         String
+  calculationMethod ExpenseCalcMethod
+  value             Decimal           @db.Decimal(18, 4)
+  quantity          Decimal           @default(1) @db.Decimal(18, 4)
+  applyTiming       GstTiming         @default(BEFORE_GST)
+  amount            Decimal           @default(0) @db.Decimal(18, 2)
+  sortOrder         Int               @default(0)
+  /// added by the server from the company expenses; the user cannot change or remove it
+  isCompany         Boolean           @default(false)
+
+  costing        Costing       @relation(fields: [costingId], references: [id], onDelete: Cascade)
+  costingGroup   CostingGroup? @relation(fields: [costingGroupId], references: [id], onDelete: Cascade)
+  expense        Expense       @relation(fields: [expenseId], references: [id])
+  /// which of method / value / timing the user overrode; the rest follow the expense master
+  overrideFields String[]      @default([])
+
+  @@index([costingId])
+  @@index([costingGroupId])
+  @@index([expenseId])
+}
+
+model CostingRevision {
+  id        String   @id @default(uuid())
+  costingId String
+  version   Int
+  snapshot  Json
+  note      String?
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  costing Costing @relation(fields: [costingId], references: [id], onDelete: Cascade)
+
+  @@unique([costingId, version])
+}
+
+// ───────────────────────── Phase 8: price lists ─────────────────────────
+// Price list items copy the costing figures they were priced from (costingVersion),
+// so a list never changes silently; `stale` is derived when the costing moved on.
+
+enum PriceListStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+model PriceList {
+  id                     String          @id @default(uuid())
+  number                 String          @unique
+  name                   String
+  effectiveDate          DateTime        @db.Date
+  status                 PriceListStatus @default(DRAFT)
+  costBase               String // BASIC_COST | TOTAL_COST
+  gstTreatment           String // EXCLUSIVE | INCLUSIVE | NONE
+  roundTo                Decimal?        @db.Decimal(18, 4)
+  defaultProfitMethod    String          @default("PERCENT")
+  defaultProfitValue     Decimal         @default(0) @db.Decimal(18, 4)
+  defaultDiscountPercent Decimal?        @db.Decimal(7, 4)
+  notes                  String?
+  /// calculation rules (decimals / rounding) the prices were computed with
+  rules                  Json
+  deletedAt              DateTime?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+  createdBy              String?
+  updatedBy              String?
+
+  items       PriceListItem[]
+  reviewFlags ReviewFlag[]
+
+  @@index([status])
+  @@index([effectiveDate])
+}
+
+model PriceListItem {
+  id             String  @id @default(uuid())
+  priceListId    String
+  costingId      String
+  costingVersion Int
+  productName    String
+  productCode    String?
+  sortOrder      Int     @default(0)
+  /// false on rows priced before prices became per unit: they hold the cost of the costing's whole quantity
+  pricedPerUnit  Boolean @default(false)
+
+  // costing figures copied at pricing time (the cost of one unit)
+  basicCost        Decimal @db.Decimal(18, 2)
+  totalCostInclGst Decimal @db.Decimal(18, 2)
+  gstPercent       Decimal @db.Decimal(7, 4)
+
+  profitMethod    String // PERCENT | FIXED
+  profitValue     Decimal  @db.Decimal(18, 4)
+  discountPercent Decimal? @db.Decimal(7, 4)
+  discountAmount  Decimal? @db.Decimal(18, 2)
+  minPrice        Decimal? @db.Decimal(18, 2)
+  maxPrice        Decimal? @db.Decimal(18, 2)
+  notes           String?
+
+  // computed
+  costBaseAmount   Decimal  @db.Decimal(18, 2)
+  profitAmount     Decimal  @db.Decimal(18, 2)
+  listPriceExGst   Decimal  @db.Decimal(18, 2)
+  gstAmount        Decimal  @db.Decimal(18, 2)
+  listPriceInclGst Decimal  @db.Decimal(18, 2)
+  sellingPrice     Decimal  @db.Decimal(18, 2)
+  discountApplied  Decimal  @db.Decimal(18, 2)
+  effectivePrice   Decimal  @db.Decimal(18, 2)
+  effectiveExGst   Decimal  @db.Decimal(18, 2)
+  effectiveInclGst Decimal  @db.Decimal(18, 2)
+  effectiveProfit  Decimal  @db.Decimal(18, 2)
+  marginPercent    Decimal  @db.Decimal(9, 2)
+  markupPercent    Decimal  @db.Decimal(9, 2)
+  flags            String[]
+
+  priceList PriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  costing   Costing   @relation(fields: [costingId], references: [id])
+
+  @@unique([priceListId, costingId])
+  @@index([costingId])
+}
+
+// ───────────────────────── Phase 9: customers & quotations ─────────────────────────
+// A quotation copies the customer details and prices it was written with. Once it is sent or
+// approved it is locked, so the figures the customer saw can never change underneath them.
+
+enum QuotationStatus {
+  DRAFT
+  PENDING
+  SENT
+  APPROVED
+  REJECTED
+  EXPIRED
+  CONVERTED
+}
+
+enum QuotationLineSource {
+  MANUAL
+  COSTING
+  PRICE_LIST
+}
+
+model Customer {
+  id            String    @id @default(uuid())
+  name          String
+  code          String    @unique
+  contactPerson String?
+  mobile        String?
+  email         String?
+  address       String?
+  gstin         String?
+  state         String?
+  notes         String?
+  isActive      Boolean   @default(true)
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  createdBy     String?
+  updatedBy     String?
+
+  customerGroupId String?
+  customerGroup   CustomerGroup? @relation(fields: [customerGroupId], references: [id], onDelete: Restrict)
+
+  quotations Quotation[]
+
+  @@index([name])
+  @@index([customerGroupId])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "Customer_name_trgm_idx")
+}
+
+/// A plain way to sort customers (no prices attached).
+model CustomerGroup {
+  id          String    @id @default(uuid())
+  name        String
+  code        String    @unique
+  description String?
+  isActive    Boolean   @default(true)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  createdBy   String?
+  updatedBy   String?
+
+  customers Customer[]
+
+  @@index([name])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "CustomerGroup_name_trgm_idx")
+}
+
+/// A price list dealer (dealer, branch, retail...) with its own profit margin, set by an admin.
+/// Every published costing is priced for every active dealer: cost + this margin.
+model PriceListDealer {
+  id            String    @id @default(uuid())
+  name          String
+  code          String    @unique
+  description   String?
+  marginPercent Decimal   @default(0) @db.Decimal(9, 4)
+  isActive      Boolean   @default(true)
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  createdBy     String?
+  updatedBy     String?
+
+  users  UserPriceListDealer[]
+  prices CostingDealerPrice[]
+
+  @@index([name])
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "PriceListDealer_name_trgm_idx")
+}
+
+/// The dealers a user belongs to. A dealer user sees only these dealers' prices.
+model UserPriceListDealer {
+  userId   String
+  dealerId String
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dealer   PriceListDealer @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+
+  @@id([userId, dealerId])
+  @@index([dealerId])
+}
+
+/// One approved costing priced for one dealer, from the costing's saved figures and the dealer's margin at the time.
+model CostingDealerPrice {
+  id            String   @id @default(uuid())
+  costingId     String
+  dealerId      String
+  marginPercent Decimal  @db.Decimal(9, 4)
+  markupAmount  Decimal  @db.Decimal(18, 2)
+  /// selling price for the costing's whole quantity, incl. GST (like the costing's own selling price)
+  sellingPrice  Decimal  @db.Decimal(18, 2)
+  /// selling price of one unit
+  unitPrice     Decimal  @db.Decimal(18, 2)
+  profitPercent Decimal  @db.Decimal(9, 2)
+  /// the unit price the dealer was last told about (null = never announced), so a change can say "was … now …"
+  announcedUnitPrice Decimal? @db.Decimal(18, 2)
+  updatedAt     DateTime @updatedAt
+
+  costing Costing         @relation(fields: [costingId], references: [id], onDelete: Cascade)
+  dealer  PriceListDealer @relation(fields: [dealerId], references: [id], onDelete: Cascade)
+
+  @@unique([costingId, dealerId])
+  @@index([dealerId])
+}
+
+/// A message for one user (bell in the app, and a browser push when the user turned that on).
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  kind      String
+  title     String
+  body      String
+  url       String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+}
+
+/// A browser or phone that accepts push messages for a user.
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Quotation {
+  id            String          @id @default(uuid())
+  number        String          @unique
+  quotationDate DateTime        @db.Date
+  validUntil    DateTime        @db.Date
+  status        QuotationStatus @default(DRAFT)
+  version       Int             @default(1)
+
+  customerId      String?
+  customerName    String
+  customerMobile  String?
+  customerEmail   String?
+  customerAddress String?
+  customerGstin   String?
+  customerState   String?
+
+  subject String?
+  terms   String?
+  notes   String?
+
+  discountPercent Decimal? @db.Decimal(7, 4)
+  discountAmount  Decimal? @db.Decimal(18, 2)
+  roundGrandTotal Boolean  @default(false)
+  rules           Json
+
+  // computed (engine, on every save)
+  subtotal          Decimal @default(0) @db.Decimal(18, 2)
+  lineDiscountTotal Decimal @default(0) @db.Decimal(18, 2)
+  headerDiscount    Decimal @default(0) @db.Decimal(18, 2)
+  taxableAmount     Decimal @default(0) @db.Decimal(18, 2)
+  gstAmount         Decimal @default(0) @db.Decimal(18, 2)
+  roundOff          Decimal @default(0) @db.Decimal(18, 2)
+  grandTotal        Decimal @default(0) @db.Decimal(18, 2)
+
+  preparedById    String
+  sentAt          DateTime?
+  approvedAt      DateTime?
+  rejectionReason String?
+  convertedRef    String?
+  convertedAt     DateTime?
+
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  createdBy String?
+  updatedBy String?
+
+  customer    Customer?        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  preparedBy  User             @relation("QuotationPreparedBy", fields: [preparedById], references: [id])
+  items       QuotationItem[]
+  shares      QuotationShare[]
+  reviewFlags ReviewFlag[]
+
+  @@index([status])
+  @@index([quotationDate])
+  @@index([customerId])
+  @@index([preparedById])
+  @@index([deletedAt, quotationDate])
+  @@index([status, validUntil])
+  @@index([customerName(ops: raw("gin_trgm_ops"))], type: Gin, map: "Quotation_customerName_trgm_idx")
+  @@index([number(ops: raw("gin_trgm_ops"))], type: Gin, map: "Quotation_number_trgm_idx")
+}
+
+model QuotationItem {
+  id          String              @id @default(uuid())
+  quotationId String
+  sortOrder   Int                 @default(0)
+  source      QuotationLineSource @default(MANUAL)
+
+  costingId       String?
+  costingVersion  Int?
+  priceListItemId String?
+  profitPercent   Decimal? @db.Decimal(9, 4)
+
+  productName     String
+  productCode     String?
+  description     String?
+  quantity        Decimal  @db.Decimal(18, 4)
+  unitId          String?
+  unitLabel       String?
+  unitPrice       Decimal  @db.Decimal(18, 4)
+  discountPercent Decimal? @db.Decimal(7, 4)
+  discountAmount  Decimal? @db.Decimal(18, 2)
+  gstPercent      Decimal  @db.Decimal(7, 4)
+
+  // computed
+  gross               Decimal @default(0) @db.Decimal(18, 2)
+  lineDiscount        Decimal @default(0) @db.Decimal(18, 2)
+  headerDiscountShare Decimal @default(0) @db.Decimal(18, 2)
+  taxableNet          Decimal @default(0) @db.Decimal(18, 2)
+  gstAmount           Decimal @default(0) @db.Decimal(18, 2)
+  lineTotal           Decimal @default(0) @db.Decimal(18, 2)
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  costing   Costing?  @relation(fields: [costingId], references: [id], onDelete: Restrict)
+  unit      Unit?     @relation(fields: [unitId], references: [id], onDelete: Restrict)
+
+  @@index([quotationId])
+  @@index([costingId])
+  @@index([unitId])
+}
+
+/// A revocable read-only link for the customer. Only a hash of the token is stored.
+model QuotationShare {
+  id          String    @id @default(uuid())
+  quotationId String
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@index([quotationId])
+}
+
+// ───────────────────────── Phase 10: images ─────────────────────────
+// Uploaded images are validated, re-encoded (metadata stripped) and stored outside the web root under
+// server-generated keys. A file can be linked to several owners (e.g. a costing and the template made from it);
+// the stored objects are deleted when the last link goes.
+
+model FileAttachment {
+  id           String   @id @default(uuid())
+  /// storage keys (relative to the upload root), never derived from user input
+  storageKey   String   @unique
+  thumbKey     String   @unique
+  /// display only; sanitised, never used as a path
+  originalName String
+  mimeType     String
+  size         Int
+  width        Int
+  height       Int
+  sha256       String
+  uploadedBy   String?
+  createdAt    DateTime @default(now())
+
+  costingImages  CostingImage[]
+  templateImages TemplateImage[]
+  companyLogos   CompanySettings[]
+
+  @@index([sha256])
+}
+
+model CostingImage {
+  id          String   @id @default(uuid())
+  costingId   String
+  fileId      String
+  description String?
+  isMain      Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  costing Costing        @relation(fields: [costingId], references: [id], onDelete: Cascade)
+  file    FileAttachment @relation(fields: [fileId], references: [id])
+
+  @@unique([costingId, fileId])
+  @@index([costingId])
+  @@index([fileId])
+}
+
+model TemplateImage {
+  id          String   @id @default(uuid())
+  templateId  String
+  fileId      String
+  description String?
+  isMain      Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  template Template       @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  file     FileAttachment @relation(fields: [fileId], references: [id])
+
+  @@unique([templateId, fileId])
+  @@index([templateId])
+  @@index([fileId])
+}
+
+// ───────────────────────── Phase 11: company details for printing ─────────────────────────
+// Minimal singleton used by print layouts and PDFs; the full settings screen follows in Phase 15.
+
+model CompanySettings {
+  id             Int      @id @default(1)
+  name           String
+  address        String?
+  phone          String?
+  email          String?
+  gstin          String?
+  state          String?
+  website        String?
+  currencyCode   String   @default("INR")
+  currencySymbol String   @default("₹")
+  footerNote     String?
+  logoFileId     String?
+  updatedAt      DateTime @updatedAt
+  updatedBy      String?
+
+  logo FileAttachment? @relation(fields: [logoFileId], references: [id], onDelete: Restrict)
+}
+
+// ───────────────────────── Phase 14: live recalculation ─────────────────────────
+// When a master input changes (item rate, labour rate, expense default, item GST / units, calculation
+// rules) a batch lists the LIVE costings it affects. Approved (snapshot) costings are never part of a
+// batch. Depending on the policy the batch is applied automatically or waits for an admin to preview
+// the before / after figures and confirm. Quotations and price lists built on frozen costings that use
+// the changed input get a review flag instead of being changed.
+
+enum RecalcKind {
+  ITEM_RATE
+  ITEM_GST
+  ITEM_UNITS
+  LABOUR_RATE
+  EXPENSE_DEFAULT
+  COMPANY_EXPENSE
+  RULES
+}
+
+enum RecalcBatchStatus {
+  PENDING
+  APPLYING
+  PARTIAL
+  APPLIED
+  DISMISSED
+}
+
+enum RecalcItemStatus {
+  APPLIED
+  UNCHANGED
+  SKIPPED
+  FAILED
+}
+
+model RecalculationBatch {
+  id            String            @id @default(uuid())
+  kind          RecalcKind
+  sourceId      String?
+  sourceName    String
+  summary       String
+  changePercent Decimal?          @db.Decimal(9, 2)
+  status        RecalcBatchStatus @default(PENDING)
+  costingCount  Int               @default(0)
+  flaggedCount  Int               @default(0)
+  appliedCount  Int               @default(0)
+  skippedCount  Int               @default(0)
+  failedCount   Int               @default(0)
+  createdBy     String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  appliedBy     String?
+  appliedAt     DateTime?
+  dismissedBy   String?
+  dismissedAt   DateTime?
+  dismissReason String?
+
+  items RecalculationItem[]
+  flags ReviewFlag[]
+
+  @@index([status, createdAt])
+  @@index([kind, sourceId, status])
+}
+
+model RecalculationItem {
+  id            String           @id @default(uuid())
+  batchId       String
+  costingId     String
+  status        RecalcItemStatus
+  reason        String?
+  sellingBefore Decimal?         @db.Decimal(18, 2)
+  sellingAfter  Decimal?         @db.Decimal(18, 2)
+  basicBefore   Decimal?         @db.Decimal(18, 2)
+  basicAfter    Decimal?         @db.Decimal(18, 2)
+  processedAt   DateTime         @default(now())
+
+  batch   RecalculationBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  costing Costing            @relation(fields: [costingId], references: [id], onDelete: Restrict)
+
+  @@index([batchId])
+  @@index([costingId])
+}
+
+/// "Something this document was priced from has changed – please look at it." Never changes the document.
+model ReviewFlag {
+  id          String    @id @default(uuid())
+  quotationId String?
+  priceListId String?
+  batchId     String?
+  /// kind:sourceId – one open flag per document and source
+  sourceKey   String
+  reason      String
+  createdAt   DateTime  @default(now())
+  resolvedAt  DateTime?
+  resolvedBy  String?
+
+  quotation Quotation?          @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  priceList PriceList?          @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  batch     RecalculationBatch? @relation(fields: [batchId], references: [id], onDelete: Restrict)
+
+  @@index([quotationId, resolvedAt])
+  @@index([priceListId, resolvedAt])
+  @@index([batchId])
+}
+
+// ───────────────────────── Phase 15: application settings ─────────────────────────
+// One row. `data` holds the validated settings document (financial year, number formats, defaults,
+// print defaults, approval workflow); the shape is defined by appSettingsSchema in @costing/validators.
+model AppSettings {
+  id        Int      @id @default(1)
+  data      Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}

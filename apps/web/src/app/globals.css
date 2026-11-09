@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens: the owner's flat palette, no gradients. Every value here is an exact hex code on purpose:
+ *   primary #2952E3 · secondary #5B7FFF · sidebar #0F172A · background #F8FAFC · card #FFFFFF
+ *   text #0F172A · secondary text #64748B · success #16A34A · warning #F59E0B · danger #DC2626 · info #0891B2
+ * Tailwind v4's built-in slate, green, amber, red and cyan are slightly different colours (for example its green-600 is
+ * #00A63E), so the shades the app uses are redefined with the matching hex scales.
+ */
+@theme {
+  --color-primary-50: #eef3fe;
+  --color-primary-100: #dce6fd;
+  --color-primary-200: #bccffb;
+  --color-primary-300: #93b0f8;
+  --color-primary-400: #5b7fff;
+  --color-primary-500: #3d65ec;
+  --color-primary-600: #2952e3;
+  --color-primary-700: #1f41ba;
+  --color-primary-800: #1b3796;
+  --color-primary-900: #1a3078;
+  --color-primary-950: #111f4d;
+  --color-primary: #2952e3;
+  --color-secondary: #5b7fff;
+  --color-sidebar: #0f172a;
+
+  --color-slate-50: #f8fafc;
+  --color-slate-100: #f1f5f9;
+  --color-slate-200: #e2e8f0;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-600: #475569;
+  --color-slate-700: #334155;
+  --color-slate-800: #1e293b;
+  --color-slate-900: #0f172a;
+  --color-slate-950: #020617;
+
+  --color-green-50: #f0fdf4;
+  --color-green-100: #dcfce7;
+  --color-green-200: #bbf7d0;
+  --color-green-500: #22c55e;
+  --color-green-600: #16a34a;
+  --color-green-700: #15803d;
+  --color-green-800: #166534;
+
+  --color-amber-50: #fffbeb;
+  --color-amber-200: #fde68a;
+  --color-amber-300: #fcd34d;
+  --color-amber-500: #f59e0b;
+  --color-amber-700: #b45309;
+  --color-amber-800: #92400e;
+  --color-amber-900: #78350f;
+
+  --color-red-50: #fef2f2;
+  --color-red-100: #fee2e2;
+  --color-red-200: #fecaca;
+  --color-red-600: #dc2626;
+  --color-red-700: #b91c1c;
+  --color-red-800: #991b1b;
+
+  --color-cyan-50: #ecfeff;
+  --color-cyan-200: #a5f3fc;
+  --color-cyan-600: #0891b2;
+  --color-cyan-700: #0e7490;
+
+  --shadow-soft: 0 1px 2px rgb(15 23 42 / 0.06);
+
+  /* compact density: the whole spacing scale (padding, margin, gap, control heights) is 20% tighter */
+  --spacing: 0.2rem;
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.15rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.3rem;
+  --text-lg: 1rem;
+  --text-lg--line-height: 1.4rem;
+  --text-xl: 1.125rem;
+  --text-xl--line-height: 1.5rem;
+  --text-2xl: 1.3125rem;
+  --text-2xl--line-height: 1.7rem;
+}
+
+html { scroll-behavior: smooth; }
+
+body { background: var(--color-slate-50); color: var(--color-slate-900); }
+.app-bg { background: var(--color-slate-50); }
+
+::selection { background: rgb(41 82 227 / 0.22); }
+
+/* form controls: one focus look everywhere */
+input, select, textarea { transition: border-color 0.12s, box-shadow 0.12s; }
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--color-primary-600);
+  box-shadow: 0 0 0 3px rgb(41 82 227 / 0.18);
+}
+input[type="checkbox"], input[type="radio"] { accent-color: #2952e3; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--color-primary-600); outline-offset: 2px; }
+
+/* tables: flat tinted header, light hover row */
+main table thead { background: var(--color-slate-100); }
+main table tbody tr:hover { background-color: var(--color-slate-50); }
+
+/* thin scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--color-slate-300) transparent; }
+.sidebar-scroll { scrollbar-color: rgb(148 163 184 / 0.35) transparent; }
+
+main h1 { letter-spacing: -0.01em; color: var(--color-slate-900); }
+
+@media print {
+  body, .app-bg { background: #fff !important; }
+  main table thead { background: transparent; }
+  main table tbody tr:hover { background-color: transparent; }
+}
