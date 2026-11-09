@@ -21,3 +21,4 @@ See `docs/architecture.md` for the phase plan.
 
 ## Deployment
 See [docs/deployment.md](docs/deployment.md) (Docker Compose with automatic HTTPS, backups, monitoring).
+
