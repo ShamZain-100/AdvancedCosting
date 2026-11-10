@@ -33,10 +33,34 @@ ARG NEXT_PUBLIC_API_URL=/api
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL NEXT_TELEMETRY_DISABLED=1
 RUN pnpm exec turbo run build
 
+# ── API production dependencies: a fresh install of only what the API needs at runtime (same lockfile, same
+#    versions; no web app, no build or test tools). The Prisma client generated in the build stage is copied in.
+FROM base AS api-deps
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY apps/api/package.json apps/api/
+COPY packages/types/package.json packages/types/
+COPY packages/validators/package.json packages/validators/
+COPY packages/config/package.json packages/config/
+COPY packages/costing-engine/package.json packages/costing-engine/
+ENV pnpm_config_fetch_timeout=900000 pnpm_config_fetch_retries=10 pnpm_config_fetch_retry_mintimeout=20000 pnpm_config_network_concurrency=6
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+    CI=true pnpm install --prod --frozen-lockfile --store-dir /pnpm-store --filter @costing/api...
+COPY --from=build /app/node_modules/.pnpm/@prisma+client@*/node_modules/.prisma /tmp/.prisma
+RUN for d in node_modules/.pnpm/@prisma+client@*/node_modules; do rm -rf "$d/.prisma" && cp -r /tmp/.prisma "$d/.prisma"; done \
+ && rm -rf /tmp/.prisma
+
 # ── API: compiled Nest app, migrations and the Prisma CLI (needed for `migrate deploy`)
-FROM build AS api
+FROM base AS api
 ENV NODE_ENV=production
-RUN mkdir -p /data/uploads && chown -R node:node /data /app
+COPY --from=api-deps --chown=node:node /app ./
+COPY --from=build --chown=node:node /app/prisma ./prisma
+COPY --from=build --chown=node:node /app/apps/api/dist ./apps/api/dist
+COPY --from=build --chown=node:node /app/packages/types/dist ./packages/types/dist
+COPY --from=build --chown=node:node /app/packages/validators/dist ./packages/validators/dist
+COPY --from=build --chown=node:node /app/packages/config/dist ./packages/config/dist
+COPY --from=build --chown=node:node /app/packages/costing-engine/dist ./packages/costing-engine/dist
+# /app is already owned by node (COPY --chown); a chown -R of it here would duplicate the whole layer
+RUN mkdir -p /data/uploads && chown -R node:node /data && chown node:node /app
 USER node
 EXPOSE 4000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \

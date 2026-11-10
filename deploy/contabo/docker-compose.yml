@@ -1,0 +1,77 @@
+# Smart Costing on the shared Contabo server (next to PrayerTime). Installed as /opt/smartcosting/docker-compose.yml
+# by install.sh; run it only through /opt/smartcosting/scripts/compose.sh, which sets the deployed image tags.
+#
+# Differences from the repository's docker-compose.prod.yml:
+#   - no Caddy: the host's nginx (shared with PrayerTime) terminates HTTPS for smartcosting.venoralab.com and proxies
+#     to the loopback ports below (deploy/contabo/nginx/)
+#   - no `build:`: images are built on a PC or a GitHub runner and streamed in through the deploy gate
+#   - no migrate service: deploy.sh runs `prisma migrate deploy` with the new image after a database dump
+#   - memory/CPU limits, because the 4 GB VM is shared
+#
+# Image names are fixed here, not taken from .env, so no setting can make the server run a different image.
+name: smartcosting
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: costing
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: costing
+    # small footprint for a shared host
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=40", "-c", "work_mem=4MB"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U costing -d costing"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    mem_limit: ${DB_MEM_LIMIT:-384m}
+    cpus: ${DB_CPUS:-1.0}
+    logging: *logging
+
+  api:
+    image: smartcosting-api:${TAG_API:?TAG_API not set; use scripts/compose.sh}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://costing:${POSTGRES_PASSWORD}@db:5432/costing?schema=public
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ random characters)}
+      FILE_URL_SECRET: ${FILE_URL_SECRET:-}
+      WEB_ORIGIN: ${WEB_ORIGIN:-https://smartcosting.venoralab.com}
+      TRUST_PROXY: "true"
+      UPLOAD_DIR: /data/uploads
+      API_PORT: "4000"
+      ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
+      DISABLE_MAINTENANCE: ${DISABLE_MAINTENANCE:-false}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      NODE_OPTIONS: --max-old-space-size=384
+    volumes: [uploads:/data/uploads]
+    ports: ["127.0.0.1:${API_HOST_PORT:-4100}:4000"]
+    depends_on:
+      db: { condition: service_healthy }
+    mem_limit: ${API_MEM_LIMIT:-512m}
+    cpus: ${API_CPUS:-1.0}
+    logging: *logging
+
+  web:
+    image: smartcosting-web:${TAG_WEB:?TAG_WEB not set; use scripts/compose.sh}
+    restart: unless-stopped
+    environment:
+      NODE_OPTIONS: --max-old-space-size=256
+    ports: ["127.0.0.1:${WEB_HOST_PORT:-3100}:3000"]
+    depends_on: [api]
+    mem_limit: ${WEB_MEM_LIMIT:-384m}
+    cpus: ${WEB_CPUS:-1.0}
+    logging: *logging
+
+volumes:
+  pgdata:
+  uploads:
