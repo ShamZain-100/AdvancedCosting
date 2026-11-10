@@ -1,0 +1,6 @@
+# Scripts and server files run on Linux: always LF, also when checked out on Windows.
+*.sh text eol=lf
+*.conf text eol=lf
+*.yml text eol=lf
+deploy/contabo/sudoers/* text eol=lf
+deploy/contabo/cron/* text eol=lf

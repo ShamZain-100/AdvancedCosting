@@ -1,0 +1,3 @@
+# Smart Costing: nightly backup of the database and uploads (installed as /etc/cron.d/smartcosting).
+# 02:45 server time, after PrayerTime's 02:30 backup so the two dumps do not overlap.
+45 2 * * * sc-deploy cd /opt/smartcosting && bash scripts/backup.sh --kind nightly >/dev/null 2>&1

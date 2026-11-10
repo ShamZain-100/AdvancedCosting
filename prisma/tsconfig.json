@@ -1,0 +1,9 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "typeRoots": ["../apps/api/node_modules/@types"],
+    "types": ["node"]
+  },
+  "include": ["seed.ts"]
+}

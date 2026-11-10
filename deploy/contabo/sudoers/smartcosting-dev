@@ -1,0 +1,4 @@
+# Smart Costing: the developer login (group smartcosting-dev) may run only sc-admin as root. sc-admin validates every
+# command and argument itself. The account has no password and no Docker group membership (that would equal root).
+# Installed by install.sh: install -m 440 … /etc/sudoers.d/smartcosting-dev && visudo -c
+%smartcosting-dev ALL=(root) NOPASSWD: /usr/local/bin/sc-admin

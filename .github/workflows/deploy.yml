@@ -1,0 +1,112 @@
+# Deploy Smart Costing to the Contabo server (https://smartcosting.venoralab.com).
+#
+# Builds both images on a GitHub runner from one commit of main, smoke-tests them, streams them to the server over SSH
+# and runs the server's deploy.sh (backup, migrations, health checks, automatic rollback), then verifies the site.
+# Same steps as a release from a PC: deploy/local-deploy.sh (docs/deploy-contabo.md).
+#
+# Who may deploy is decided here in GitHub, not on the server:
+#   - anyone with Write access can START it (Actions > Deploy > Run workflow, or `gh workflow run deploy.yml`)
+#   - it then WAITS for a required reviewer of the "production" environment to approve, before anything is built
+# The server key it uses (secret DEPLOY_SSH_KEY) is bound to sc-deploy-gate: it can only load Smart Costing images,
+# deploy, and read status/logs. It cannot open a shell, change files or touch PrayerTime.
+#
+# One-time configuration:
+#   Settings > Environments > New environment "production": Required reviewers = the owner (and "Prevent self-review"
+#     if the developer should never approve their own deploy); Deployment branches = main only
+#   Secrets of the "production" environment:
+#     DEPLOY_SSH_KEY       private key whose public half the owner added with `install.sh add-key deploy github`
+#     DEPLOY_KNOWN_HOSTS   output of `ssh-keyscan -t ed25519 <server ip>`
+#   Variables of the "production" environment:
+#     DEPLOY_HOST          the server's IP address
+name: Deploy
+run-name: Deploy ${{ inputs.services }} · ${{ inputs.ref || 'main' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit SHA, tag or branch to deploy; must be on main (empty = tip of main). An older SHA = rollback.
+        required: false
+        default: ''
+        type: string
+      services:
+        description: What to release
+        required: true
+        default: api web
+        type: choice
+        options: [api web, api, web]
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://smartcosting.venoralab.com
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEPLOY_SSH: sc-deploy@${{ vars.DEPLOY_HOST }}
+      SERVICES: ${{ inputs.services }}
+      YES: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the commit (must be on main)
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.ref }} # through the environment, never pasted into the script
+        run: |
+          ref=$INPUT_REF
+          [[ -n $ref ]] || ref=origin/main
+          [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::invalid ref"; exit 1; }
+          sha=$(git rev-parse --verify "${ref}^{commit}" 2>/dev/null || git rev-parse --verify "origin/${ref}^{commit}") \
+            || { echo "::error::cannot resolve '$ref'"; exit 1; }
+          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$sha is not on main"; exit 1; }
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+          echo "Deploying $sha ($SERVICES)" >>"$GITHUB_STEP_SUMMARY"
+
+      - name: SSH key
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          [[ -n $KEY && -n $KNOWN && -n $HOST ]] || { echo "::error::DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS or DEPLOY_HOST is not configured"; exit 1; }
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KEY" >~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN" >~/.ssh/known_hosts
+          ssh -o BatchMode=yes "$DEPLOY_SSH" true
+
+      - name: Build and smoke-test
+        run: REF=${{ steps.ref.outputs.sha }} bash deploy/local-deploy.sh build
+
+      - name: Ship images
+        run: REF=${{ steps.ref.outputs.sha }} bash deploy/local-deploy.sh ship
+
+      - name: Deploy (backup, migrate, switch, health check, rollback if unhealthy)
+        run: REF=${{ steps.ref.outputs.sha }} bash deploy/local-deploy.sh deploy
+
+      - name: Verify
+        run: REF=${{ steps.ref.outputs.sha }} bash deploy/local-deploy.sh verify
+
+      - name: Status and logs on failure
+        if: failure()
+        run: |
+          bash deploy/local-deploy.sh status || true
+          bash deploy/local-deploy.sh logs api 100 || true
+
+      - name: Remove the key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519

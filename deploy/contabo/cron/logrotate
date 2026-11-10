@@ -1,0 +1,10 @@
+/var/log/smartcosting/*.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 sc-deploy adm
+    su sc-deploy adm
+}
